@@ -28,11 +28,8 @@ TC_IMPL = os.getenv("RSAN_TC_IMPL_BUILD")
 RSAN_LNK = os.getenv("RSAN_LINKER_SCRIPT")
 RSAN_DL = os.getenv("RSAN_DYNAMIC_LINKER")
 
-# Optimization flag: set to -O0 for Juliet Test Suite (otherwise bugs are optimized away)
-OPT = "-O0"
-
 # Baseline CFLAGS and LDFLAGS
-STD_CFLAGS = ["-fno-builtin-" + fn for fn in ("malloc", "calloc", "realloc", "free")] + ["-g", OPT, "-flto=full", "-Wno-int-conversion", "-Wno-deprecated-non-prototype"]
+STD_CFLAGS = ["-fno-builtin-" + fn for fn in ("malloc", "calloc", "realloc", "free")] + ["-g", "-flto=full", "-Wno-int-conversion", "-Wno-deprecated-non-prototype"]
 STD_LDFLAGS = ["-fuse-ld=lld"]
 
 # RSan CFLAGS and LDFLAGS
@@ -51,40 +48,52 @@ def get_tcmalloc_ldflags(build_dir):
 
 class Baseline(infra.Instance):
     name = 'baseline'
+    def __init__(self, opt_level):
+        self.name += "_" + opt_level
+        self.opt = ["-" + opt_level]
     def configure(self, ctx):
         ctx.cc = CC
         ctx.cxx = CXX
-        ctx.cflags += STD_CFLAGS
-        ctx.cxxflags += STD_CFLAGS
+        ctx.cflags += self.opt + STD_CFLAGS
+        ctx.cxxflags += self.opt + STD_CFLAGS
         ctx.ldflags += STD_LDFLAGS + get_tcmalloc_ldflags(TC_BASE)
 
 class RSanImplicit(infra.Instance):
     name = 'rsan-impl'
+    def __init__(self, opt_level):
+        self.name += "_" + opt_level
+        self.opt = ["-" + opt_level]
     def configure(self, ctx):
         ctx.cc = CC
         ctx.cxx = CXX
-        ctx.cflags += STD_CFLAGS + RSAN_CFLAGS + IMPL_CFLAGS
-        ctx.cxxflags += STD_CFLAGS + RSAN_CFLAGS + IMPL_CFLAGS
+        ctx.cflags += self.opt + STD_CFLAGS + RSAN_CFLAGS + IMPL_CFLAGS
+        ctx.cxxflags += self.opt + STD_CFLAGS + RSAN_CFLAGS + IMPL_CFLAGS
         ctx.ldflags += STD_LDFLAGS + get_tcmalloc_ldflags(TC_IMPL) + RSAN_LDFLAGS + IMPL_LDFLAGS
 
 class RSanExplicit(infra.Instance):
     name = 'rsan-expl'
+    def __init__(self, opt_level):
+        self.name += "_" + opt_level
+        self.opt = ["-" + opt_level]
     def configure(self, ctx):
         ctx.cc = CC
         ctx.cxx = CXX
-        ctx.cflags += STD_CFLAGS + RSAN_CFLAGS
-        ctx.cxxflags += STD_CFLAGS + RSAN_CFLAGS
+        ctx.cflags += self.opt + STD_CFLAGS + RSAN_CFLAGS
+        ctx.cxxflags += self.opt + STD_CFLAGS + RSAN_CFLAGS
         ctx.ldflags += STD_LDFLAGS + get_tcmalloc_ldflags(TC_EXPL) + RSAN_LDFLAGS
 
 class ASan(infra.Instance):
     name = 'asan'
     ASAN_CFLAGS = ["-fsanitize=address", "-fno-sanitize-address-use-after-scope", "-fsanitize-address-use-after-return=never"]
     ASAN_LDFLAGS = ["-fsanitize=address", "-fno-sanitize-address-use-after-scope", "-fsanitize-address-use-after-return=never"]
+    def __init__(self, opt_level):
+        self.name += "_" + opt_level
+        self.opt = ["-" + opt_level]
     def configure(self, ctx):
         ctx.cc = CC
         ctx.cxx = CXX
-        ctx.cflags += STD_CFLAGS + self.ASAN_CFLAGS
-        ctx.cxxflags += STD_CFLAGS + self.ASAN_CFLAGS
+        ctx.cflags += self.opt + STD_CFLAGS + self.ASAN_CFLAGS
+        ctx.cxxflags += self.opt + STD_CFLAGS + self.ASAN_CFLAGS
         ctx.ldflags += STD_LDFLAGS + self.ASAN_LDFLAGS
     def prepare_run(self, ctx):
         # ASan sometimes crashes on startup with ASLR enabled:
@@ -94,10 +103,14 @@ class ASan(infra.Instance):
 if __name__ == "__main__":
     setup = infra.Setup(__file__)
 
-    setup.add_instance(Baseline())
-    setup.add_instance(RSanImplicit())
-    setup.add_instance(RSanExplicit())
-    setup.add_instance(ASan())
+    setup.add_instance(Baseline("O0"))
+    setup.add_instance(Baseline("O2"))
+    setup.add_instance(RSanImplicit("O0"))
+    setup.add_instance(RSanImplicit("O2"))
+    setup.add_instance(RSanExplicit("O0"))
+    setup.add_instance(RSanExplicit("O2"))
+    setup.add_instance(ASan("O0"))
+    setup.add_instance(ASan("O2"))
 
     if os.path.exists(SPEC2006_DIR):
         setup.add_target(infra.targets.SPEC2006(
