@@ -58,7 +58,7 @@ if [[ ! -f $RSAN_TC_BASE_BUILD/lib/libtcmalloc.a ]]; then
     make install
 fi
 
-# Build TCMalloc-implicit: can only be built on x86 (BMI support)
+# Build TCMalloc-implicit: currently assumes x86
 if [ $ARCH == "x86_64" ] && [[ ! -f $RSAN_TC_IMPL_BUILD/lib/libtcmalloc.a ]]; then
     cd $RSAN_TC_IMPL
     libtoolize
@@ -85,5 +85,17 @@ elif [ $ARCH == "aarch64" ] && [[ ! -f $RSAN_TC_EXPL_BUILD/lib/libtcmalloc.a ]];
     make install
 fi
 
+# Build linker script for implicit tagging (x86)
+if [ $ARCH == "x86_64" ] && [[ ! -f $RSAN_LINKER_SCRIPT ]]; then
+    cd $ROOT_DIR/linker-implicit/globals
+    python3 generate_linker_script.py
+fi
+
+# Build dynamic linker for implicit tagging (x86)
+if [ $ARCH == "x86_64" ] && [[ ! -f $RSAN_DYNAMIC_LINKER ]]; then
+    cd $ROOT_DIR/linker-implicit/libdl
+    chmod +x run.sh
+    ./run.sh
+fi
 echo "All done"
 

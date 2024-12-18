@@ -3,7 +3,6 @@
 BB_TAG_SHIFT = 41
 
 fl = open("linkglobals.ld", "w")
-fl.write("ENTRY(_my_start);\n\n")
 fl.write("SECTIONS\n")
 fl.write("{\n")
 for i in range(4, BB_TAG_SHIFT):
@@ -30,7 +29,6 @@ for i in range(4, BB_TAG_SHIFT):
     fl.write("\t{\n")
     fl.write("\t\tKEEP(*(%s))\n" %(section_const))
     fl.write("\t\t%s = (.);\n" %(section_const_end))
-    print("extern void* " + section_const + "_end;")
     fl.write("\t}\n")
 
 fl.write("}\n")

@@ -20,6 +20,10 @@ export RSAN_TC_IMPL_BUILD=$RSAN_TOP/tcmalloc-impl-build
 export RSAN_TC_EXPL=$RSAN_TOP/tcmalloc-explicit
 export RSAN_TC_EXPL_BUILD=$RSAN_TOP/tcmalloc-expl-build
 
+# Implicit tagging linking
+export RSAN_LINKER_SCRIPT=$RSAN_TOP/linker-implicit/globals/linkglobals.ld
+export RSAN_DYNAMIC_LINKER=$RSAN_TOP/linker-implicit/libdl/pld.so
+
 # Infra
 export RSAN_INFRA=$RSAN_TOP/infra
 
