@@ -3,7 +3,7 @@
 # Change Me! depending on where you cloned the RSan repo
 export RSAN_TOP=/home/ubuntu/floris/rangesanitizer
 
-# Change Me! depending on where you installed SPEC CPU 2006
+# Change Me! depending on where you installed SPEC CPU2006
 export RSAN_SPEC2006=/home/ubuntu/floris/rangesanitizer/spec2006
 
 # LLVM/Clang
