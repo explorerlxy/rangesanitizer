@@ -5996,7 +5996,7 @@ public:
 #endif
     Triple TargetTriple = Triple(M.getTargetTriple());
     if(TargetTriple.getArch() == Triple::x86_64){
-      // TODO: check if LAM is available
+      // XXX: check if LAM is available
       isImplicitTagging = true;
       isX86 = true;
     }
@@ -6020,7 +6020,7 @@ public:
       return false;
     }
 
-#define DUMP_IR 1
+#define DUMP_IR 0
 #if DUMP_IR == 1
     std::string modname(M.getName());
     std::error_code ec;

@@ -96,7 +96,7 @@ class ASan(infra.Instance):
         ctx.cxxflags += self.opt + STD_CFLAGS + self.ASAN_CFLAGS
         ctx.ldflags += STD_LDFLAGS + self.ASAN_LDFLAGS
     def prepare_run(self, ctx):
-        # ASan sometimes crashes on startup with ASLR enabled:
+        # ASan sometimes crashes on startup with ASLR enabled. to disable:
         # disable user-space ASLR: echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
         ctx.runenv["ASAN_OPTIONS"] = "alloc_dealloc_mismatch=0,detect_odr_violation=0,detect_leaks=0,detect_stack_use_after_return=0,detect_stack_use_after_scope=0"
 
