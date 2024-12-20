@@ -112,8 +112,6 @@ using namespace llvm;
 using namespace llvm::safestack;
 
 #define BASEBOUNDS_X86
-#define DEBUG_INVCOND 0
-#define DEBUG_SCEV 0
 
 #define ENABLE_RESTOREPOINT_ALL 1
 
@@ -147,21 +145,6 @@ const DenseSet<StringRef> interceptors = {
   "munmap"
 };
 const std::string interceptPrefix = "swiftsan_";
-
-#if 0
-// snippet to call printf() with Value*
-Type *intType = Type::getInt32Ty(F.getContext());
-// Declare C standard library printf
-std::vector<Type *> printfArgsTypes({Type::getInt8PtrTy(F.getContext())});
-FunctionType *printfType = FunctionType::get(intType, printfArgsTypes, true);
-FunctionCallee printfFunc = F.getParent()->getOrInsertFunction("printf", printfType);
-
-// The format string for the printf function, declared as a global literal
-Value *str = IRBUser.CreateGlobalStringPtr("Delta %d SizeClass %d SizeClassInBits %d Jumps %d Tag %d\n", "str");
-
-std::vector<Value *> argsV({str, Delta, IRBUser.getInt64(SizeClass), SizeClassInBits, Jumps, Tag});
-IRBUser.CreateCall(printfFunc, argsV, "calltmp");
-#endif
 
 // if true: implicit tagging, else: AArch64 TBI / x86_64 LAM
 bool isImplicitTagging; 
@@ -621,7 +604,6 @@ class MinMaxChain {
   }
 
   void add(InterestingMemoryOperand &O){
-    // errs() << "Calling add...\n";
     if(this->PDT.dominates(O.getInsn(), this->Last.getInsn())){
       this->ContainedOps.push_back(this->Last);
       this->Last = O;
@@ -630,7 +612,6 @@ class MinMaxChain {
       this->ContainedOps.push_back(O);
     }
     this->sz++;
-    // errs() << "Size is now: " << this->sz << "\n";
   }
 
 };
@@ -756,8 +737,6 @@ private:
             const std::vector<std::pair<uint64_t, SmallVector<GlobalVariable*, N>>> &GlobalsBySizeClass) {
         const std::string Name = std::string("glob.") + (isConstant ? "const" : "mut");
 
-        // errs() << "instrumentGlobals: -- constant = " << isConstant << "\n";
-
         for (auto &it : GlobalsBySizeClass) {
             const uint64_t SizeClass = it.first;
             const SmallVectorImpl<GlobalVariable*> &GVs = it.second;
@@ -777,7 +756,6 @@ private:
                 // placeholder metadata size until we know the true addr location
                 Constant *ObjWithRedzone = padAndAppendRedzone(GV, SizeClass, ConstantInt::get(Int64Ty, 0x42));
                 SCInits.push_back(ObjWithRedzone);
-                // errs() << "Added to SCInits: " << *ObjWithRedzone << "\n";
             }
             
             std::string SCName = Name + "." + std::to_string(SizeClass) + ".ty";
@@ -797,12 +775,8 @@ private:
               std::string sec = std::string("basebounds_section_") + (isConstant ? "const_" : "mut_");
               sec += std::to_string(SizeClass);
 
-              // llvm::errs() << "Setting section " << sec << " to class: " << *ReplClass << "\n";
               ReplClass->setSection(sec);
             }
-
-            // errs() << "New Global for class: " << *ReplClass << "\n";
-            // errs() << "Has type: " << *SCTy << "\n";
 
             // Create index array for replacement GEPs below
             Type *Int32Ty = IntegerType::get(M.getContext(), 32);
@@ -822,8 +796,6 @@ private:
             for (GlobalVariable *GV : GVs) {
                 Idx[1] = ConstantInt::get(Int32Ty, GlobIndex++);
                 Constant *newGlobPtr = ConstantExpr::getInBoundsGetElementPtr(GEPTy, ReplClass, Idx);
-                // errs() << "OG Global: " << *GV << "\n";
-                // errs() << "Replacement: " << *newGlobPtr << "\n";
 
                 // by default the aliasee is the new global (GEP entry in the class)
                 // but if we perform explicit pointer tagging, the aliasee should
@@ -878,16 +850,13 @@ private:
                   // the last object can have any metadata value, just set zero for best detection
                   SizeMeta = ConstantInt::get(Int64Ty, 0x0);
                 }
-                // errs() << "Using SizeMeta: " << *SizeMeta << "\n";
                 Constant *ObjWithRedzone = padAndAppendRedzone(GV, SizeClass, SizeMeta);
-                // errs() << "ObjWithRedzone = " << *ObjWithRedzone << "\n";
                 SCInitsWithMeta.push_back(ObjWithRedzone);
                 NextGlobal++;
             }
 
             // final update to the initializer with end of obj addrs in metadata
             Constant *newInitMeta = ConstantStruct::get(SCTy, SCInitsWithMeta);
-            // errs() << "Init og " << SCInits.size() << " vs new " << SCInitsWithMeta.size() << "\n";
             ReplClass->setInitializer(newInitMeta);
 
             // finally: replace the GVs
@@ -1133,8 +1102,6 @@ class SafeStack {
 
   bool LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVector<CheckMergeCands, 16> &CheckMergers, SmallVector<CheckMergeCands, 16> &FuncMetaReuse, std::set<Instruction *> &optimized);
   
-  bool TryMergeLoopInvariantPtrChecks(Function &F, LoopRangeCheck &Check, SmallVector<CheckMergeCands, 16> &CheckMergers, std::set<Instruction *> &optimized);
-
   bool PtrContainsCallUse(Value *Ptr, Loop *L);
 
   void LoopOptimization(Function &F, SmallVector<InterestingMemoryOperand, 16> &OperandsToInstrument, SmallVector<InterestingMemoryOperand, 16> &invariants, SmallVector<CheckMergeCands, 16> &CheckMergers, SmallVector<CheckMergeCands, 16> &FuncMetaReuse, LoopInfo *LI, ScalarEvolution *SE);
@@ -1482,7 +1449,6 @@ SafeStack::createStackRestorePoints(IRBuilder<> &IRB, Function &F,
 
     size_t sid = RT.getTypeIndex(StackID);
     RestorePoints[I].push_back(sid);
-    // errs() << "RestorePt " << *I << " stack-id " << sid << "\n";
   }
 
   return DynamicTop;
@@ -1700,7 +1666,6 @@ Value *SafeStack::moveStaticAllocasToUnsafeStack(
 #endif
 
     if(BinaryOperator *binOR = dyn_cast<BinaryOperator>(TaggedAlloca)){
-      //errs() << "Setting metadata = " << original_size << " on GEP: " << *gepp << "\n";
       MDNode* temp_N = MDNode::get(F.getContext(), ConstantAsMetadata::get(ConstantInt::get(Int64Ty, original_size)));
       MDNode* N = MDNode::get(F.getContext(), temp_N);
       binOR->setMetadata("unsafe.stack.taggedor.og_size", N);
@@ -1726,7 +1691,6 @@ Value *SafeStack::moveStaticAllocasToUnsafeStack(
       Value *Replacement = IRBUser.CreateBitCast(Off, AI->getType(), Name);
 
       if(GetElementPtrInst* gepp = dyn_cast<GetElementPtrInst>(Off)){
-        //errs() << "Setting metadata = " << original_size << " on GEP: " << *gepp << "\n";
         MDNode* temp_N = MDNode::get(F.getContext(), ConstantAsMetadata::get(ConstantInt::get(Int64Ty, original_size)));
         MDNode* N = MDNode::get(F.getContext(), temp_N);
         gepp->setMetadata("unsafe.stack.og_size", N);
@@ -1760,7 +1724,6 @@ Value *SafeStack::moveStaticAllocasToUnsafeStack(
     IStore->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
 
     if(GetElementPtrInst* gepp = dyn_cast<GetElementPtrInst>(Off)){
-      //errs() << "Setting metadata = " << original_size << " on GEP: " << *gepp << "\n";
       MDNode* temp_N = MDNode::get(F.getContext(), ConstantAsMetadata::get(ConstantInt::get(Int64Ty, original_size)));
       MDNode* N = MDNode::get(F.getContext(), temp_N);
       gepp->setMetadata("unsafe.stack.og_size", N);
@@ -2312,7 +2275,6 @@ std::tuple<Value *, Value *> SafeStack::InsertCheck(Instruction &I, Value &addr,
   Value *base = nullptr;
   Constant *og_size = nullptr;
   SmallPtrSet<Value *, 4> Visited;
-  // errs() << "Accumulate I: " << I <<  "\n";
 
   // DISABLE this: it does not work if you underflow on the stack object
   // can only work if the addr is a gep with offset known to be positive
@@ -2326,8 +2288,6 @@ std::tuple<Value *, Value *> SafeStack::InsertCheck(Instruction &I, Value &addr,
   Value *Tag = nullptr;
 
   if(base && og_size){ // bypass
-    // errs() << "Accumulate res size: " << *og_size << " -- " << *og_size->getType() << "\n";
-    // errs() << "Accumulate res: " << *base << " -- " << *og_size->getType() << "\n";
     Value *BaseAsInt = builder.CreatePtrToInt(base, IntPtrTy);
     EndOfObj = builder.CreateIntToPtr(builder.CreateAdd(BaseAsInt, og_size), Int64PtrTy);
     return InsertCheckMeta(I, addr, write, ptrType, EndOfObj, nullptr, false);
@@ -2439,7 +2399,6 @@ std::tuple<Value *, Value *> SafeStack::InsertCheck(Instruction &I, Value &addr,
   builder.CreateCall(swiftsan_report_fn, {Target, TargetFull, EndOfObj}, "swiftsan_report");
 #endif
 
-#if 1
   if(isX86) {
     // x86 software interrupt
     InlineAsm *IA = InlineAsm::get(
@@ -2464,7 +2423,6 @@ std::tuple<Value *, Value *> SafeStack::InsertCheck(Instruction &I, Value &addr,
                     /*canThrow*/ false);
     builder.CreateCall(IA, {});
   }
-#endif
   return {EndOfObj, Tag};
 }
 
@@ -2550,7 +2508,6 @@ void SafeStack::OptStaticallySafeAccesses(ObjectSizeOffsetVisitor &ObjSizeVis, S
     // If global variable
     if (GlobalVariable *GV = dyn_cast<GlobalVariable>(getUnderlyingObject(Addr))) {
       if (isSafeAccess(ObjSizeVis, Addr, O.TypeSize)) {
-        //errs() << "GLOB_IS_SAFE_ACC " << O.toString() << "\n";
         toKeep = false;
       }
       // if we can determine that this load/store was on a skipped global, no need to check
@@ -2593,7 +2550,6 @@ void SafeStack::OptStaticallySafeAllocas(SmallVector<InterestingMemoryOperand, 1
     Instruction *targetInsn = O.getInsn();
     for (Instruction *SafeI : SafeMemOps){
         if(SafeI == targetInsn){
-          // errs() << "~~~~~~~~~~~~~This is a safe instruction: " << *targetInsn << "\n";
           toKeep = false;
         }
     }
@@ -2629,7 +2585,6 @@ void SafeStack::OptStaticallySafeUnsafeStack(SmallVector<InterestingMemoryOperan
 
     // take the load/store ptr:
     Value *Addr = O.getPtr()->stripPointerCasts();
-    // errs() << "Looking at: " << *O.getInsn() << "\n";
 
     // case 1: load/store directly on unsafe stack obj (includes pointer tag OR-operation)
     if(Constant *Sz = getUnsafeStackObjOgSize(Addr)){
@@ -2639,8 +2594,6 @@ void SafeStack::OptStaticallySafeUnsafeStack(SmallVector<InterestingMemoryOperan
         // access size
         APInt AccSize(SzInt.getBitWidth(), DL.getTypeStoreSize(O.OpType), false); // unsafe obj size is never negative
         if(AccSize.ult(SzInt)){
-          // errs() << "trivially safe: " << *O.getInsn() << "\n";
-          // errs() << "SzInt: " << SzInt << " Access Size " << AccSize << "\n";
           optimized.insert(O.getInsn());
           continue;
         }
@@ -2665,9 +2618,7 @@ void SafeStack::OptStaticallySafeUnsafeStack(SmallVector<InterestingMemoryOperan
       // Compare Sz to GEPOffset: it should be ConstantInt
       if (ConstantInt *CI = dyn_cast<ConstantInt>(Sz)){
         APInt SzInt = CI->getValue();
-        // errs() << "Comparing: SzInt " << SzInt << " to GEPOffset " << GEPOffset << "\n";
         if(GEPOffset.slt(SzInt)){ // e.g. idx 63 is max for sz 64
-          // errs() << "This is safe\n";
           optimized.insert(O.getInsn());
           continue;
         }
@@ -3159,55 +3110,7 @@ bool isOperInVector(InterestingMemoryOperand &target, SmallVector<InterestingMem
   return false;
 }
 
-
-
-bool SafeStack::TryMergeLoopInvariantPtrChecks(Function &F, LoopRangeCheck &Check, SmallVector<CheckMergeCands, 16> &CheckMergers, std::set<Instruction *> &optimized){
-  
-  // Inside Loop: Merge invariant ptr checks with a range if possible
-  // auto PDT = PostDominatorTree();
-  // PDT.recalculate(F);
-
-  for(auto merge : CheckMergers){
-    InterestingMemoryOperand Oper = merge.TopTarget;
-
-    // the invariant ptr access is part of the possible check mergers
-    // note that the merged check will most likely be done in the preheader
-    if(Oper.getInsn() == Check.MemAccess){
-
-      Instruction *InsertPt = Check.InsertPt;
-      Type *AccessTy = merge.Biggest.Oper.OpType;
-
-      Instruction *LowAddr = merge.Smallest.Addr;
-      Instruction *HighAddr = merge.Biggest.Addr;
- 
-      if(!MoveAddrUp(InsertPt, LowAddr/*, PDT*/)) return false;
-      if(!MoveAddrUp(InsertPt, HighAddr/*, PDT*/)) return false;
-
-      // errs() << "LOOP merged check on: " << *Oper.getInsn() << "\n";
-      // errs() << "With LowAddr = " << *LowAddr << "\n";
-      // errs() << "With HighAddr = " << *HighAddr << "\n";
-
-      InsertCheckRange(*InsertPt, LowAddr, HighAddr, AccessTy);
-      optimized.insert(Oper.getInsn());
-
-      for(InterestingMemoryOperand covered : merge.ContainedOps){
-        // errs() << "Included in this check: " << *covered.getInsn() << "\n";
-        optimized.insert(covered.getInsn());
-      }
-
-      return true;
-    }
-  }
-  return false;
-}
-
 bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVector<CheckMergeCands, 16> &CheckMergers, SmallVector<CheckMergeCands, 16> &FuncMetaMergers, std::set<Instruction *> &optimized){
-
-#define DEBUG_LOOP_META_REUSE 0
-
-#if DEBUG_LOOP_META_REUSE == 1
-  errs() << "For this instruction we should try to reuse metadata: " << *Check.MemAccess << "\n";
-#endif
 
   // here: Check.InsertPt == &(*F.begin()->getFirstInsertionPt());
 
@@ -3248,20 +3151,12 @@ bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVe
       AllocaInst *CheckCache = new AllocaInst(AllocaType, DL.getAllocaAddrSpace(), "BB_CacheCheck", Check.InsertPt);
       CheckCache->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
     
-#if DEBUG_LOOP_META_REUSE == 1
-      errs() << "Alloca: " << *CheckCache << "\n";
-#endif
-
       // initialize the alloca check cache to fail the first loop iteration (in the preheader)
       Instruction *PreheaderInit = &*Check.L->getLoopPreheader()->getTerminator();
       builder.SetInsertPoint(PreheaderInit);
       Instruction *StoreInit = builder.CreateStore(ValUnset, CheckCache);
       StoreInit->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
     
-#if DEBUG_LOOP_META_REUSE == 1
-      errs() << "StoreInit: " << *StoreInit << "\n";
-#endif
-
       // loads that dominate the (single) exit block can be checked after the loop
       // at the load, set the flag to true unconditionally, to signal the loop exit
       // to perform the check, since the access must have been executed
@@ -3305,22 +3200,12 @@ bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVe
     AllocaInst *MetaAlloc = new AllocaInst(AllocaType, DL.getAllocaAddrSpace(), "BB_ReuseMetadataLoop", Check.InsertPt);
     MetaAlloc->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
 
-  #if DEBUG_LOOP_META_REUSE == 1
-    errs() << "Alloca: " << *MetaAlloc << "\n";
-  #endif
-
     // initialize the alloca check result to fail the first loop iteration (in the preheader)
     Instruction *PreheaderInit = &*Check.L->getLoopPreheader()->getTerminator();
 
     builder.SetInsertPoint(PreheaderInit); // Check.L->getLoopPreheader()->getTerminator()
     Instruction *StoreInit = builder.CreateStore(ValUnset, MetaAlloc);
     StoreInit->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
-
-    // errs() << "Created alloca initializer: " << *StoreInit << " in function: " << F.getName() << "\n";
-
-  #if DEBUG_LOOP_META_REUSE == 1
-    errs() << "StoreInit: " << *StoreInit << "\n";
-  #endif
 
     // at the checked location: load the metadata and compare it against the ptr
     builder.SetInsertPoint(Check.MemAccess);
@@ -3342,10 +3227,6 @@ bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVe
     // compare target >= end_addr (unsigned greater or equal)
     Value *cmp = builder.CreateICmp(CmpInst::Predicate::ICMP_UGE, CurPtr, metaValue);
 
-  #if DEBUG_LOOP_META_REUSE == 1
-    errs() << "CacheCmp: " << *cmp << "\n";
-  #endif
-
     // control flow split location (before the target load/store)
     Instruction *split = &*std::next(cast<Instruction>(cmp)->getIterator());
 
@@ -3362,100 +3243,9 @@ bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVe
     Instruction *CacheMetaStore = builder.CreateStore(std::get<0>(EndNTag), MetaAlloc);
     CacheMetaStore->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
 
-  #if DEBUG_LOOP_META_REUSE == 1
-    errs() << "CacheMetaStore: " << *CacheMetaStore << "\n";
-  #endif
-
     // no need to reset the metadata, preheader will re-initialize if we are an inner loop
     // notify the caller to mark the load/store as checked/optimized
 
-#if 0 // disable debugging
-    for(auto share : FuncMetaMergers){
-      if(share.TopTarget.getInsn() == Check.MemAccess){
-        // errs() << "Inside loop candidate for CACHED metadata reuse: " << *Check.MemAccess  << "\n";
-        for(InterestingMemoryOperand covered : share.ContainedOps){
-
-          // make sure the candidate is not a candidate for check merging, because that is more efficient
-          bool skip_because_merge_cand = false;
-          for (auto checkmerge : CheckMergers){
-            if(checkmerge.TopTarget.getInsn() == covered.getInsn()){
-              skip_because_merge_cand = true;
-              break;
-            }
-            for(auto merge_cand : checkmerge.ContainedOps){
-              if(merge_cand.getInsn() == covered.getInsn()){
-                skip_because_merge_cand = true;
-                break;
-              }
-            }
-            if(skip_because_merge_cand) break; // out of the CheckMergers loop
-          }
-          if(skip_because_merge_cand) continue; // skip this candidate
-
-          // if the candidate was not already optimized by something else
-          if(optimized.find(covered.getInsn()) == optimized.end()){
-
-            // errs() << "The Candidate: " << *covered.getInsn() << "\n";
-
-            // if you come from CacheMetaStore, it means the true check was performed, and EndOfObj is known there
-            // if you come directly from 'cmp' or 'metaValue' (the fast check), you can re-use the loaded alloca value
-            // if(Instruction *MetaLoad = dyn_cast<Instruction>(metaValue)){ // should always be true
-
-              // if the covered instruction has a (single?) predecessor,
-              // for which the predecessors are cachemetastore and metaload, then we insert the PHI there..?
-              // otherwise, we give up, too much phi tracking
-
-              BasicBlock *TargetBlock = covered.getInsn()->getParent();
-              BasicBlock *FullCheckBlock = CacheMetaStore->getParent();
-              BasicBlock *FastCheckBlock = cast<Instruction>(metaValue)->getParent();
-
-              // if the next instruction comes directly from either full-check or fast-check, we know which to select
-              // if not, we need a lot of phi tracking: lets do one unconditional level...
-
-              BasicBlock *PHIBlock = TargetBlock;
-              bool bail = false;
-              for (BasicBlock *Pred : predecessors(TargetBlock)) {
-                if(Pred != FullCheckBlock && Pred != FastCheckBlock){
-                  PHIBlock = Pred;
-                  // check if the predecessors of this intermediate block are our check blocks, otherwise give up
-                  for(BasicBlock *PPred : predecessors(Pred)) {
-                    if(PPred != FullCheckBlock && PPred != FastCheckBlock){
-                      bail = true;
-                      break;
-                    }
-                  }
-                }
-                if(bail) break;
-              }
-
-              // skip this candidate: too many PHIs
-              if(bail) continue;
-
-              PHINode *PhiEndOfObj = PHINode::Create(AllocaType, 2, "end_of_obj_reuse", PHIBlock->getFirstNonPHI());
-
-              // since the first check dominates the candidates, the stack metadata is already valid & loaded in any block 
-              // we come from, except for the first iteration where the cache still needs to be set
-              for (pred_iterator PI = pred_begin(PHIBlock), E = pred_end(PHIBlock); PI != E; ++PI) {
-                BasicBlock *Pred = *PI;
-                if(Pred == FullCheckBlock) {
-                  PhiEndOfObj->addIncoming(std::get<0>(EndNTag), CacheMetaStore->getParent());
-                }
-                else {
-                  PhiEndOfObj->addIncoming(metaValue, Pred);
-                }
-              }
-
-              // here we use 'slowZero' == true, to allow for a slow check on tag being zero without having to cache 'tag'
-              InsertCheckMeta(*covered.getInsn(), *covered.getPtr(), true, covered.OpType, PhiEndOfObj, nullptr, true);
-              // Mark Candidate as 'optimized'
-              optimized.insert(covered.getInsn());
-            // }
-          }
-        }
-        return true;
-      }
-    }
-#endif
     return true;
   }
   return false;
@@ -3490,8 +3280,6 @@ bool SafeStack::PtrContainsCallUse(Value *Ptr, Loop *L){
           if(CB->isDebugOrPseudoInst() || CB->isLifetimeStartOrEnd()){
             continue;
           }
-          // errs() << "CallBase in loop: " << *CB << "\n";
-
 #if 0
           // super conservative: if any call in the loop, no opt
           return true;
@@ -3501,7 +3289,6 @@ bool SafeStack::PtrContainsCallUse(Value *Ptr, Loop *L){
             AliasResult a = AA->alias(Ptr, arg);
             if(a == AliasResult::MayAlias || a == AliasResult::MustAlias ){
               // less conservative: the target ptr is used in a call (as an alias)
-              // errs() << "CallBase with alias arg in loop: " << *CB << "\n";
               return true;
             }
           }
@@ -3527,7 +3314,6 @@ bool SafeStack::PtrContainsCallUse(Value *Ptr, Loop *L){
         continue;
       }
       // ptr is used by a call in loop, possibly freed
-      // errs() << "This call uses the addr: " << *CI << " (target: " << *Ptr << ")\n";
       return true;
     }
   }
@@ -3535,11 +3321,6 @@ bool SafeStack::PtrContainsCallUse(Value *Ptr, Loop *L){
 }
 
 void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOperand, 16> &OperandsToInstrument, SmallVector<InterestingMemoryOperand, 16> &invariants, SmallVector<CheckMergeCands, 16> &CheckMergers, SmallVector<CheckMergeCands, 16> &FuncMetaMergers, LoopInfo *LI, ScalarEvolution *SE) { 
-
-  int cache_check_cnt = 0;
-#if 0
-  int cache_meta_cnt = 0;
-#endif
 
   SmallVector<LoopRangeCheck, 32> checks;
 
@@ -3550,16 +3331,8 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
 
       Value *Addr = Oper.getPtr();
 
-      // if the load/store ptr does not come from an instruction, we cannot check if it is 
-      // conditionally executed, so skip
-      //Instruction *IAddr = dyn_cast<Instruction>(Addr);
-      //if(!IAddr){
-      //  continue;
-      //}
-
       // if the pointer may be freed in the loop, we cannot optimize
       if(PtrContainsCallUse(Addr, L)){
-        // errs() << "Addr " << *Addr << " is used in a call! skip opt\n";
         continue;
       }
 
@@ -3610,78 +3383,22 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
 
           Instruction *flagInsertPt = &(*F.begin()->getFirstInsertionPt());
 
-          // errs() << "No INV-conditional path available... Re-use metadata\n";
           bool inv = isOperInVector(Oper, invariants);
           if(inv){
-
-            // new ptr invariance optimization: check merging (TODO: try exit block?)
-            // InsertPt = L->getLoopPreheader()->getTerminator();
-            // checks.emplace_back(InsertPt, Oper.OpType, nullptr, nullptr, Oper.getInsn(), L, inv, Addr, true);
-
-#if 0 // disable this Loop-Cond-Invariant since it does not improve performance
-            // invariant ptr accesses can cache the check result
-            if(cache_check_cnt <= 7){ // 8
-              // errs() << "INVARIANT_PTR_REUSE_CHECK\n";
-              checks.emplace_back(flagInsertPt, Oper.OpType, nullptr, nullptr, Oper.getInsn(), L, inv, Addr, true);
-              cache_check_cnt++;
-            }
-#endif
             // no need for the rest of the SCEV/path analysis
             continue;
           }
           else{
             const SCEV *PtrExpr = SE->getSCEV(Addr);
-            // errs() << "PtrExpr = " << *PtrExpr << "\n";
             if (auto *AR = dyn_cast<SCEVAddRecExpr>(PtrExpr)) {
-              // errs() << "AddRec = " << *AR << "\n";
               const SCEV *Step = AR->getStepRecurrence(*SE);
-              // errs() << "Step = " << *Step << "\n";
               if (SE->isKnownPositive(Step)) {
-                // errs() << "the step is known to increase the ptr\n";
                 // mark as to-be-checked per usual, but with metadata caching
                 checks.emplace_back(flagInsertPt, Oper.OpType, nullptr, nullptr, Oper.getInsn(), L, inv, Addr, true);
                 // no need for the rest of the SCEV/path analysis
                 continue;
               }
             }
-#if 0 // disable until heuristics -- with any cnt this does not help
-            if(cache_meta_cnt <= 3){
-            // fallback case: not invariant, not an AddRec or not known pos, 
-            // but if addr is a GEP, we can try to look for a positive offset
-              if(GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Addr->stripPointerCasts())){
-                // errs() << "Is_GEP_Case ?\n";
-
-                // the GEP base needs to be unchanged throughout the loop
-                Value *GEPBase = GEP->getPointerOperand();
-                if(!isLoopInvariantValue(GEPBase, L, SE)){
-                  // skip: we cannot reuse metadata if the base can change
-                  continue;
-                }
-
-                bool positive = true;
-                for (auto &Op : GEP->indices()) {
-                  auto Range = SE->getSCEV(Op.get());
-                  // not non-negative == not provably positive -> skip candidate
-                  if (!SE->getSignedRangeMin(Range).isNonNegative()){
-                    positive = false;
-                    break;
-                  }
-                }
-                
-                // if we know the load/store is always on the same base, and
-                // we know that all the indices of the GEP are positive
-                // we can reuse the metadata (pointer can not underflow)
-                if(positive){
-                  // mark as to-be-checked per usual, but with metadata re-use
-                  checks.emplace_back(flagInsertPt, Oper.OpType, nullptr, nullptr, Oper.getInsn(), L, inv, Addr, true);
-                  // errs() << "NOT_ADD_REC_BUT_GEP_IS_INV_POS !\n";
-                  cache_meta_cnt++;
-                  // no need for the rest of the SCEV/path analysis
-                  continue;
-                }
-              }
-            }
-#endif
           }
           // cannot optimize this: e.g., no AddRec, not known positive, not invariant
           continue;
@@ -3691,23 +3408,6 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
           InsertPt = L->getLoopPreheader()->getTerminator();
         }
 
-#if 0 // seems redundant after fixing guaranteed-to-execute
-        // if the target ptr comes from a phinode, the insertpt has to 
-        // dominate both incoming edges (XXX: recursively?) otherwise
-        // a value may not be available in the preheader
-        bool all_dom = true;
-        if(PHINode* phi = dyn_cast<PHINode>(Addr)){
-          for(Value *Op : phi->incoming_values()){
-            if(Instruction *Incoming = dyn_cast<Instruction>(Op)){
-              if(!DT.dominates(InsertPt, Incoming)){
-                all_dom = false;
-                break;
-              }
-            }
-          }
-        }
-        if(!all_dom) continue;
-#endif
       } // end of !exit (preheader)
 
       const SCEV *ScStart = nullptr;
@@ -3759,13 +3459,6 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
           // could not compute
           continue;
         }
-
-#if DEBUG_SCEV == 1
-        errs() << "Target MemOp " << *Oper.getInsn() << "\n";
-        errs() << "Addr = " << *Addr << "\n";
-        errs() << "ScStart = " << *ScStart << "\n";
-        errs() << "ScEnd = " << *ScEnd << "\n";
-#endif
       }
 
       checks.emplace_back(InsertPt, Oper.OpType, ScStart, ScEnd, Oper.getInsn(), L, invariant, Addr, false);
@@ -3773,14 +3466,6 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
     } // end of is_in_loop
 
   } // end of for all memory operations
-
-  /*
-  Definition 3 (Dominator). Let P and Q be two nodes of a flow graph. P is said to
-  dominate Q if all paths from the entry node to Q contains P. 
-
-  Definition 4 (Post-dominator). Let P and Q be two nodes of a flow graph. P is said
-  to post-dominate Q if all paths from Q to the exit node contains P. 
-  */
 
   // after the SCEV constraints are generated, insert the checks 
   // (avoids our control flow insertions messing with SCEV)
@@ -3792,50 +3477,15 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
     // track the instruction before the insertion point, on which we will
     // split if the expansion succeeds
 
-#if DEBUG_INVCOND == 1 
-    errs() << "Trying to expand check for: " << *Range.MemAccess << "\n";
-#endif
-
     if(optimized.find(Range.MemAccess) != optimized.end()){
       // post-metadata share check
-      // errs() << "Skip: already optimized (probably metadata re-use candidate): " << *Range.MemAccess << "\n";
       continue;
     }
 
-    // if(Range.invariant){
-    //   // for now we assume variant pointers are excluded from check merging
-    //   // for invariant pointers, we can try to see if there are any candidates that are covered by this check
-    //   // if we found check mergers, that means we inserted the checks, so abort here
-    //   // if no match with check merge keys was found, insert the check (later below) per usual
-      
-    //   // if(TryMergeLoopInvariantPtrChecks(F, Range, CheckMergers, optimized)){
-    //   //   //  DT.recalculate(F);
-    //   //   continue;
-    //   // }
-
-    //   // invariant ptrs marked for metadata reuse that cannot do check merging: skip for now 
-    //   // these could do check reuse or so but it needs heuristics
-    //   if(Range.reuseMeta){
-    //     continue;
-    //   }
-    // }
-
     if(Range.reuseMeta){
-#if 1 // disable debugging
       if(!Range.invariant){
         bool reuse_from_dom = false;
-#if 0 // disable PHI-node meta reuse
-        for(auto entry : FuncMetaMergers){
-          for(InterestingMemoryOperand covered : entry.ContainedOps){
-            // if the target load/store is to be covered by metadata reuse of another,
-            // skip now, and the other will insert the check later
-            if(covered.getInsn() == Range.MemAccess){
-              reuse_from_dom = true;
-              break;
-            }
-          }
-        }
-#endif
+
         // make sure the candidate is not a candidate for check merging, because that is more efficient
         bool skip_because_merge_cand = false;
         for (auto checkmerge : CheckMergers){
@@ -3855,7 +3505,6 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
         // skip
         if(reuse_from_dom || skip_because_merge_cand) continue; 
       }
-#endif
 
       // set up a check that reuses cached metadata inside the loop
       if(LoopPtrReuseMetadata(F, Range, CheckMergers, FuncMetaMergers, optimized)){
@@ -3871,57 +3520,33 @@ void SafeStack::LoopOptimization(Function &F, SmallVector<InterestingMemoryOpera
     }
     else{
       SCEVExpander Expander(*SE, DL, "dummy_expander");
-      // errs() << "Working on instruction: " << *Range.MemAccess << "\n";
-
-      // errs() << "Try to expand (1) ScStart = " << *Range.ScStart << "\n";
-      // errs() << "At InsertPt: " << *Range.InsertPt << "\n";
       StartValue = Expander.getRelatedExistingExpansion(Range.ScStart, Range.InsertPt, const_cast<Loop*>(Range.L));
       if (!StartValue && Expander.isSafeToExpandAt(Range.ScStart, Range.InsertPt))
         StartValue = Expander.expandCodeFor(Range.ScStart, nullptr, Range.InsertPt);
       
       if(!StartValue){
         // StartValue could not be expanded into valid IR
-#if DEBUG_INVCOND == 1
-        errs() << "Could not expand StartValue\n";
-#endif
         continue;
       }
 
-      // errs() << "Try to expand (2) ScEnd = " << *Range.ScEnd << "\n";
-      // errs() << "At InsertPt: " << *Range.InsertPt << "\n";
       EndValue = Expander.getRelatedExistingExpansion(Range.ScEnd, Range.InsertPt, const_cast<Loop*>(Range.L));
       if (!EndValue && Expander.isSafeToExpandAt(Range.ScEnd, Range.InsertPt))
         EndValue = Expander.expandCodeFor(Range.ScEnd, nullptr, Range.InsertPt);
       
       if(!EndValue){
         // EndValue could not be expanded into valid IR
-#if DEBUG_INVCOND == 1
-        errs() << "Could not expand EndValue\n";
-#endif
         continue;
       }
 
-#if DEBUG_SCEV == 1
-      errs() << "StartValue = " << *StartValue << "\n";
-      errs() << "EndValue = " << *EndValue << "\n";
-#endif
     }
 
     Instruction *CheckInsertPt = Range.InsertPt; // default
 
-    // errs() << "Inserting check at CheckInsertPt: " << *CheckInsertPt << "\n";
-
     // insert the check (either in preheader or in exit block)
     if(Range.invariant){
-#if DEBUG_INVCOND == 1
-      errs() << "Inserting Ptr Invariant Check for: " << *Range.MemAccess << "\n";
-#endif
       InsertCheck(*CheckInsertPt, *StartValue, true, Range.ptrType);
     }
     else{
-#if DEBUG_INVCOND == 1
-      errs() << "Inserting Range Check for: " << *Range.MemAccess << "\n";
-#endif
       InsertCheckRange(*CheckInsertPt, StartValue, EndValue, Range.ptrType);
     }
 
@@ -4031,7 +3656,6 @@ bool SafeStack::IsAvailableToMove(Instruction *Ptr, Instruction *InsertPt, Small
       // e.g.: globals, func args, ...
       // so conservatively skip
       return false;
-      // errs() << "What is this? " << *Op << "\n";
     }
   }
 
@@ -4059,8 +3683,6 @@ void SafeStack::MinMaxMergingOptimization(Function &F, SmallVector<InterestingMe
       }
     }
     if(give_up) continue;
-
-    // errs() << "The First, Last, and Candidates are all targets: " << *chain.First.getInsn() << "\n"; 
 
     // Check everything on the Last
     Instruction *InsertPt = chain.Last.getInsn();
@@ -4121,8 +3743,6 @@ void SafeStack::MinMaxMergingOptimization(Function &F, SmallVector<InterestingMe
       // First OpType == Second OpType
       InsertCheckRange(*InsertPt, gmin, gmax, minmax.First.OpType);
 
-      // errs() << "MIN_MAX: LOAD-MIN-MAX\n";
-
       optimized.insert(minmax.First.getInsn());
       optimized.insert(minmax.Second.getInsn());
     }
@@ -4149,18 +3769,6 @@ void SafeStack::MinMaxMergingOptimization(Function &F, SmallVector<InterestingMe
       // we could move the ptr instruction up, but only if we can prove the data does not change
       if(DT.dominates(minmax.Second.getPtr(), InsertPt)){
 
-      // figure out (conservatively) if the second ptr is available at the insertpt
-      // if(Instruction *IPtr = dyn_cast<Instruction>(minmax.Second.getPtr())){
-
-        // SmallPtrSet<Value *, 4> Visited;
-        // if(IsAvailableToMove(IPtr, InsertPt, Visited)){
-
-          // if(F.getName() == "encode_one_macroblock"){
-            // errs() << "Moving: IPtr: " << *IPtr << "\n";
-          // }
-          // if we can move the second ptr up, merge the check
-          // IPtr->moveBefore(InsertPt);
-
           IRBuilder<> builder(InsertPt);
           Value *gmin = builder.CreateBinaryIntrinsic(Intrinsic::umin, minmax.First.getPtr(), minmax.Second.getPtr());
           Value *gmax = builder.CreateBinaryIntrinsic(Intrinsic::umax, minmax.First.getPtr(), minmax.Second.getPtr());
@@ -4168,11 +3776,8 @@ void SafeStack::MinMaxMergingOptimization(Function &F, SmallVector<InterestingMe
           // First OpType == Second OpType
           InsertCheckRange(*InsertPt, gmin, gmax, minmax.First.OpType);
 
-          // errs() << "MIN_MAX: Fixxxed-STORE-MIN-MAX\n";
-
           optimized.insert(minmax.First.getInsn());
           optimized.insert(minmax.Second.getInsn());
-        // }
       }
     }
   }
@@ -4199,9 +3804,6 @@ void SafeStack::NegPosMergingOptimization(Function &F, SmallVector<InterestingMe
     if (optimized.find(negpos.Pos.getInsn()) != optimized.end()) continue;
     if (optimized.find(negpos.Neg.getInsn()) != optimized.end()) continue;
 
-    // errs() << "We are trying to optimize NEG-POS Pair:\n";
-    // errs() << "Neg: " << *negpos.Neg.getInsn() << "\n";
-    // errs() << "Pos: " << *negpos.Pos.getInsn() << "\n";
 
     // we need to be careful, because the GEP offsets are non-constant,
     // so we do not want to mess up data dependencies by moving instructions
@@ -4212,26 +3814,7 @@ void SafeStack::NegPosMergingOptimization(Function &F, SmallVector<InterestingMe
     if(negpos.neg_first){
       // for the first access, see if that is a store
       if(isa<StoreInst>(negpos.Neg.getInsn())){
-#if 0 // try disable moving of ptrs
-        // we cannot delay the check: find out if we can move the ptr up without breaking anything
-        Instruction *InsertPt = negpos.Neg.getInsn(); // first access
-        if(Instruction *IPtr = dyn_cast<Instruction>(negpos.Pos.getPtr())){
-          if(IsAvailableToMove(IPtr, InsertPt)){
-            IPtr->moveBefore(InsertPt);
-            // errs() << "Merged check (Store: Neg->Pos) after moving Ptr: " << *IPtr << "\n";
-            InsertCheckRange(*InsertPt, negpos.Neg.getPtr(), negpos.Pos.getPtr(), negpos.Pos.OpType);
-
-            // errs() << "POS_NEG: STORE-NEG-POS\n";
-
-            optimized.insert(negpos.Neg.getInsn());
-            optimized.insert(negpos.Pos.getInsn());
-          }
-          else{
-            // bail out: may be another pair works out
-            // errs() << "Cannot move ptr up of: " << *negpos.Pos.getInsn() << "\n";
-          }
-        }
-#endif
+        // skip
       }
       else{
         // we can check on the second access
@@ -4239,11 +3822,8 @@ void SafeStack::NegPosMergingOptimization(Function &F, SmallVector<InterestingMe
         // Sanity check: Neg ptr should be available at the Pos insertpt
         //if(DT.dominates(negpos.Neg.getPtr(), InsertPt))
         { // this should always be true given dominance
-          // errs() << "Inserting merged check on the second access (Neg->Pos)...\n";
 
           InsertCheckRange(*InsertPt, negpos.Neg.getPtr(), negpos.Pos.getPtr(), negpos.Pos.OpType);
-
-          // errs() << "POS_NEG: LOAD-NEG-POS\n";
 
           optimized.insert(negpos.Neg.getInsn());
           optimized.insert(negpos.Pos.getInsn());
@@ -4253,25 +3833,7 @@ void SafeStack::NegPosMergingOptimization(Function &F, SmallVector<InterestingMe
     else{ // pos first
       // for the first access, see if that is a store
       if(isa<StoreInst>(negpos.Pos.getInsn())){
-#if 0 // try disable moving of ptrs
-        // we cannot delay the check: find out if we can move the ptr up without breaking anything
-        Instruction *InsertPt = negpos.Pos.getInsn(); // first access
-        if(Instruction *IPtr = dyn_cast<Instruction>(negpos.Neg.getPtr())){
-          if(IsAvailableToMove(IPtr, InsertPt)){
-            IPtr->moveBefore(InsertPt);
-            // errs() << "Merged check (Store: Pos->Neg) after moving Ptr: " << *IPtr << "\n";
-            InsertCheckRange(*InsertPt, negpos.Neg.getPtr(), negpos.Pos.getPtr(), negpos.Pos.OpType);
-            // errs() << "POS_NEG: STORE-POS-NEG\n";
-
-            optimized.insert(negpos.Neg.getInsn());
-            optimized.insert(negpos.Pos.getInsn());
-          }
-          else{
-            // bail out: may be another pair works out
-            // errs() << "Cannot move ptr up of: " << *negpos.Pos.getInsn() << "\n";
-          }
-        }
-#endif
+        // skip
       }
       else{
         // we can check on the second access
@@ -4279,10 +3841,8 @@ void SafeStack::NegPosMergingOptimization(Function &F, SmallVector<InterestingMe
         // Sanity check: Pos ptr should be available at the Neg insertpt
         //if(DT.dominates(negpos.Pos.getPtr(), InsertPt))
         { // this should always be true given dominance
-          // errs() << "Inserting merged check on the second access (Pos->Neg)...\n";
           
           InsertCheckRange(*InsertPt, negpos.Neg.getPtr(), negpos.Pos.getPtr(), negpos.Pos.OpType);
-          // errs() << "POS_NEG: LOAD-POS-NEG\n";
 
           optimized.insert(negpos.Neg.getInsn());
           optimized.insert(negpos.Pos.getInsn());
@@ -4322,33 +3882,17 @@ void SafeStack::BlockSharingOptimization(Function &F, SmallVector<InterestingMem
 
     // make sure the addresses and its dependencies are available at the insertion point
 
-    /*
-      Can we do this sharing also for loops?
-      I think loop variant pointers are a bit trickier, we would need to prove the range is a subrange
-      This would never be constant I think
-
-      But for loop invariant pointers, there may be other load/stores on the same base for which 
-      we can merge checks?
-    */
-
     if(!MoveAddrUp(InsertPt, LowAddr/*, PDT*/)) {
-      // errs() << "Cannot move up LowAddr: " << *LowAddr << "\n";
       continue;
     }
     if(!MoveAddrUp(InsertPt, HighAddr/*, PDT*/)) {
-      // errs() << "Cannot move up LowAddr: " << *HighAddr << "\n";
       continue;
     }
 
-    // errs() << "Trying to create merged check on: " << *Oper.getInsn() << "\n";
-    // errs() << "With LowAddr = " << *LowAddr << "\n";
-    // errs() << "With HighAddr = " << *HighAddr << "\n";
-  
     InsertCheckRange(*InsertPt, LowAddr, HighAddr, AccessTy);
     optimized.insert(Oper.getInsn());
 
     for(InterestingMemoryOperand covered : merge.ContainedOps){
-      // errs() << "Included in this check: " << *covered.getInsn() << "\n";
       optimized.insert(covered.getInsn());
     }
 
@@ -4365,7 +3909,6 @@ void SafeStack::BlockSharingOptimization(Function &F, SmallVector<InterestingMem
 
 
 void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<InterestingMemoryOperand, 16> &OperandsToInstrument, SmallVector<CheckMergeCands, 16> &MetaReuse, AliasAnalysis *AA, ScalarEvolution *SE) {
-  // errs() << "Creating FUNC metadata reuse map for " << F.getName() << "\n";
   
   // we can re-use metadata for accesses on the same base with a larger offset
   // it is not sufficient to know the offset is positive, because the GEP base could be OOB
@@ -4378,10 +3921,8 @@ void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<Inter
     Instruction *IAddr = dyn_cast<Instruction>(Oper.getPtr());
     if(!IAddr) continue;
 
-    // errs() << "Look at: " << *Oper.getInsn() << "\n";
     if(GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Oper.getPtr()->stripPointerCasts())){
 
-      // errs() << "GEP Ptr:" << *GEP << "\n";
       // no GEPs from our instrumentation
       if(Instruction *IGEPPtr = dyn_cast<Instruction>(GEP->getPointerOperand())){
         if(IGEPPtr->hasMetadata("swiftsan")) continue;
@@ -4432,7 +3973,6 @@ void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<Inter
 
         bool otherIsSmaller;
         if(OtherOffset.sgt(GEPOffset)){
-          // errs() << "GEP " << *GEP << " is smaller than OtherGEP " << *OtherGEP << "\n";
           otherIsSmaller = false;         
         }
         else{
@@ -4441,30 +3981,21 @@ void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<Inter
         }
 
         // Track all the candidates.
-        // errs() << "Insert: " << *Other.getInsn()<< "\n";
         CheckCandidates[OSBThis].emplace_back(Other, OtherIAddr, OtherOffset, otherIsSmaller);
       }
     }
   }
-
-  // errs() << "~~~~~~~~ checking candidates ~~~~~~~~\n";
 
   for(auto entry : CheckCandidates){
     OffsetSameBase *ThisOSB = entry.first;
     InterestingMemoryOperand KeyOper = ThisOSB->Oper;
     bool covered = false;
 
-    // errs() << "Looking at KEY entry: " << *KeyOper.getInsn() << "\n";
-    // errs() << "Which has GEP: " << *ThisOSB->Addr << "\n";
-
     for(auto other : CheckCandidates){
       if(KeyOper.getInsn() == other.first->Oper.getInsn()) continue; // itself
-        // errs() << "Other KEY: " << *other.first->Oper.getInsn() << "\n";
 
       for(auto osb : other.second){
-        // errs() << "Other KEY has candidate INS: " << *osb.Oper.getInsn() << "\n";
         if(KeyOper.getInsn() == osb.Oper.getInsn()){
-          // errs() << "Instruction already contained in another entrys candidates: " << *KeyOper.getInsn() << "\n";
           covered = true;
           break;
         }
@@ -4485,16 +4016,7 @@ void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<Inter
     }
 
     MetaReuse.emplace_back(KeyOper, ContainedOps, Smallest, Biggest);
-    // errs() << "Done.\n";
   }
-
-  // for(auto entry : MetaReuse){
-  //   errs() << "Meta Top Instruction: " << *entry.TopTarget.getInsn() << "\n";
-  //   errs() << "These can re-use metadata: \n";
-  //   for(auto Contained : entry.ContainedOps){
-  //     errs() << "\t" << *Contained.getInsn() << "\n";
-  //   }
-  // }
 
   // clean up
   for(auto entry : CheckCandidates){
@@ -4535,10 +4057,6 @@ void SafeStack::FindMinMaxPairs(Function &F, SmallVector<InterestingMemoryOperan
   // after which we can insert a merged range check on [min,max]
 
   auto PDT = PostDominatorTree(F);
-
-  DenseMap<InterestingMemoryOperand*, SmallVector<InterestingMemoryOperand, 16>> LocalChainMap;
-
-  // SmallVector<MinMaxChain, 16> LocalMinMaxChains;
   
   for (InterestingMemoryOperand &Oper : OperandsToInstrument) {
 
@@ -4546,10 +4064,8 @@ void SafeStack::FindMinMaxPairs(Function &F, SmallVector<InterestingMemoryOperan
     Instruction *IAddr = dyn_cast<Instruction>(Oper.getPtr());
     if(!IAddr) continue;
 
-    // errs() << "Look at: " << *Oper.getInsn() << "\n";
     if(GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Oper.getPtr()->stripPointerCasts())){
 
-      // errs() << "GEP Ptr:" << *GEP << "\n";
       // no GEPs from our instrumentation
       if(Instruction *IGEPPtr = dyn_cast<Instruction>(GEP->getPointerOperand())){
         if(IGEPPtr->hasMetadata("swiftsan")) continue;
@@ -4584,8 +4100,6 @@ void SafeStack::FindMinMaxPairs(Function &F, SmallVector<InterestingMemoryOperan
         if(!PDT.dominates(Other.getInsn(), access))
           continue;
 
-        // errs() << "OtherGEP: " << *OtherGEP << "\n";
-
         // TODO: if the pointers are in a loop and loop invariant,
         // we can calculate the min,max once in the preheader (assuming unconditional)
 
@@ -4598,66 +4112,10 @@ void SafeStack::FindMinMaxPairs(Function &F, SmallVector<InterestingMemoryOperan
         // can go undetected.
         if(szFirst == szSecond){
           MinMaxPairs.emplace_back(Oper, Other);
-#if 0 // disable chains: doesnt seem to help
-          // first instr load for simplicity
-          if(isa<LoadInst>(Oper.getInsn()))
-            LocalChainMap[&Oper].emplace_back(Other);
-#endif
         }
       }
     }
   }
-
-
-#if 0 // disable chains: doesnt seem to help
-  // see which chains are easily checkable (loads, possibly ending in a store)
-  for(auto entry : LocalChainMap){
-    bool give_up = false;
-
-    // THRESHOLD to avoid bloat
-    if(entry.second.size() > 2) continue;
-
-    // if the 'entry' is contained in another entries candidates, with a larger sz, take that one instead
-    for(auto other : LocalChainMap){
-      if(entry.first->getInsn() == other.first->getInsn()) continue;
-
-      for(auto other_cont : other.second){
-        if(entry.first->getInsn() == other_cont.getInsn()){
-          // errs() << "Contained elsewhere, lets see size: " << entry.second.size() << " vs " << other.second.size() << "\n";
-
-          if(entry.second.size() > other.second.size()) break;
-
-          // errs() << "This entry is already contained in a better chain:" << *entry.first->getInsn() << "\n";
-          give_up = true;
-          break;
-        }
-      }
-    }
-
-    InterestingMemoryOperand Last = entry.second.front();
-
-    for(auto contained : entry.second){
-      if(PDT.dominates(contained.getInsn(), Last.getInsn())){
-        Last = contained;
-        // errs() << "Found new Last: " << *Last.getInsn() << "\n";
-      }
-    }
-
-    for(auto contained : entry.second){
-      if(contained.getInsn() != Last.getInsn() && !isa<LoadInst>(contained.getInsn())){
-        give_up = true;
-        break;
-      }
-    }
-    if(give_up) continue;
-
-    // errs() << "Final chain Top: " << *entry.first->getInsn() << "\n";
-    // errs() << "Final Last: " << *Last.getInsn() << "\n";
-
-    // Last is allowed to be either load or store
-    MinMaxChains.emplace_back(*entry.first, Last, PDT, entry.second);
-  }
-#endif
 
 }
 
@@ -4674,10 +4132,8 @@ void SafeStack::FindNegPosPairs(Function &F, SmallVector<InterestingMemoryOperan
     Instruction *IAddr = dyn_cast<Instruction>(Oper.getPtr());
     if(!IAddr) continue;
 
-    // errs() << "Look at: " << *Oper.getInsn() << "\n";
     if(GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Oper.getPtr()->stripPointerCasts())){
 
-      // errs() << "GEP Ptr:" << *GEP << "\n";
       // no GEPs from our instrumentation
       if(Instruction *IGEPPtr = dyn_cast<Instruction>(GEP->getPointerOperand())){
         if(IGEPPtr->hasMetadata("swiftsan")) continue;
@@ -4712,22 +4168,15 @@ void SafeStack::FindNegPosPairs(Function &F, SmallVector<InterestingMemoryOperan
         if(!PDT.dominates(Other.getInsn(), access))
           continue;
 
-        // errs() << "OtherGEP: " << *OtherGEP << "\n";
-
         // Now, the GEP and OtherGEP form a pair if one is negative and the other is positive
         if(GEPOffsetIsNegative(GEP, SE) && GEPOffsetIsPositive(OtherGEP, SE)){
           NegPosPairs.emplace_back(Oper, Other, true); // neg, pos, neg dom pos
-          // errs() << "Negative: " << *GEP << "\n";
-          // errs() << "Positive: " << *OtherGEP << "\n";
         }
         else if(GEPOffsetIsNegative(OtherGEP, SE) && GEPOffsetIsPositive(GEP, SE)){
           NegPosPairs.emplace_back(Other, Oper, false); // neg, pos, pos dom neg
-          // errs() << "Negative: " << *OtherGEP << "\n";
-          // errs() << "Positive: " << *GEP << "\n";
         }
         else{
           // not a pair, keep searching.
-          // errs() << "not provably neg/pos\n";
         }
       }
     }
@@ -4758,9 +4207,7 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
       Instruction *IAddr = dyn_cast<Instruction>(Oper.getPtr());
       if(!IAddr) continue;
 
-      // errs() << "In this block we look at: " << *Oper.getInsn() << "\n";
       if(GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Oper.getPtr()->stripPointerCasts())){
-        // errs() << "Exploring Target Ptr GEP: " << *GEP << "\n";
         // check the other load/stores in the Block
         // they should access the same base, and have a higher GEP offset
         // and we need to ensure domination (pick the top one)
@@ -4846,8 +4293,6 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
                   AliasResult a = AA->alias(GEP->getPointerOperand(), arg);
                   if(a == AliasResult::MayAlias || a == AliasResult::MustAlias ){
                     call_inbetween = true;
-                    // errs() << "For target GEP: " << *GEP << "\n";
-                    // errs() << "Cannot include candidate " << *OtherGEP << ", ALIAS ARG call in between: " << *CB << "\n";
                     break;
                   }
 #endif
@@ -4871,11 +4316,9 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
 
           bool otherIsSmaller;
           if(OtherOffset.sgt(GEPOffset)){
-            // errs() << "GEP " << *GEP << " is smaller than OtherGEP " << *OtherGEP << "\n";
             otherIsSmaller = false;         
           }
           else if(OtherOffset.slt(GEPOffset)){
-            // errs() << "GEP " << *GEP << " is larger than OtherGEP " << *OtherGEP << "\n";
             otherIsSmaller = true;
           }
           else{
@@ -4893,31 +4336,20 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
           // Instruction -> AllSmallerThan, AllBiggerThan
           // if Instruction is in another Smaller or Bigger Than, delete the entry
 
-          // TODO fallback: if we cannot prove postdominance, we could re-use metadata
-          // LocalMetaReuseMap[&Oper].emplace_back(Other);
-
         }
       }
     }
-
-    // errs() << "~~~~~~~~ checking candidates ~~~~~~~~\n";
 
     for(auto entry : CheckCandidates){
       OffsetSameBase *ThisOSB = entry.first;
       InterestingMemoryOperand KeyOper = ThisOSB->Oper;
       bool covered = false;
 
-      // errs() << "Looking at KEY entry: " << *KeyOper->getInsn() << "\n";
-      // errs() << "Which has GEP: " << *ThisOSB->GEP << "\n";
-
       for(auto other : CheckCandidates){
         if(KeyOper.getInsn() == other.first->Oper.getInsn()) continue; // itself
-          // errs() << "Other KEY: " << *other.first->Oper->getInsn() << "\n";
 
         for(auto osb : other.second){
-          // errs() << "Other KEY has candidate INS: " << *osb.Oper->getInsn() << "\n";
           if(KeyOper.getInsn() == osb.Oper.getInsn()){
-            // errs() << "Instruction already contained in another entrys candidates: " << *KeyOper->getInsn() << "\n";
             covered = true;
             break;
           }
@@ -4933,16 +4365,10 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
 
       SmallVector<InterestingMemoryOperand, 16> ContainedOps;
 
-      // errs() << "Starting point for: " << *KeyOper.getInsn() << "\n";
-      // errs() << "Smallest = " << Smallest.Offset << "\n";
-      // errs() << "Biggest = " << Biggest.Offset << "\n";
-
       // loop through the offsets and find the smallest and biggest
       for(auto osb : entry.second){
-        // errs() << "Comparing against osb: " << osb.Offset << "\n";
         if(osb.smaller){
           if(osb.Offset.slt(Smallest.Offset)){
-            // errs() << "Smaller offset: " << osb.Offset << "\n";
             Smallest = osb;
           }
         }
@@ -4951,30 +4377,14 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
           APInt CurrTotalOffset = Biggest.Offset + APInt(Biggest.Offset.getBitWidth(), DL.getTypeStoreSize(Biggest.Oper.OpType)-1);
           APInt OtherTotalOffset = osb.Offset + APInt(osb.Offset.getBitWidth(), DL.getTypeStoreSize(osb.Oper.OpType)-1);
           if(OtherTotalOffset.sgt(CurrTotalOffset)){
-            // errs() << "Larger offset: " << osb.Offset << "\n";
-            // errs() << "Including type offset: " << OtherTotalOffset << "\n";
             Biggest = osb;
           }
         }
         ContainedOps.push_back(osb.Oper);
       }
 
-      // errs() << "Inserting...\n";
-      // errs() << "Smallest addr: " << Smallest.Offset << "\n";
-      // errs() << "Biggest addr: " << Biggest.Offset << "\n";
       CheckMergers.emplace_back(KeyOper, ContainedOps, Smallest, Biggest);
-      // errs() << "Done.\n";
     }
-
-    // for(auto entry : CheckMergers){
-    //   errs() << "Check Merge Top Instruction: " << *entry.TopTarget->getInsn() << "\n";
-    //   errs() << "Merged Smallest addr: " << entry.Smallest.Offset << "\n";
-    //   errs() << "Merged Biggest addr: " << entry.Biggest.Offset << "\n";
-    //   errs() << "This entry covers: \n";
-    //   for(auto Contained : entry.ContainedOps){
-    //     errs() << "\t" << *Contained->getInsn() << "\n";
-    //   }
-    // }
 
     // clean up
     for(auto entry : CheckCandidates){
@@ -4985,7 +4395,6 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
 }
 
 void SafeStack::MetadataSharingOptimization(Function &F, SmallVector<InterestingMemoryOperand, 16> &OperandsToInstrument, SmallVector<CheckMergeCands, 16> &FuncMetaMergers, AliasAnalysis *AA, ScalarEvolution *SE) {
-  // errs() << "entering metadata reuse for " << F.getName() << "\n";
 
   // TODO: if the target already has a check, but there are candidates that do not
   // we need to find the tag,end-of-obj pair so we can still try to re-use.
@@ -4995,19 +4404,15 @@ void SafeStack::MetadataSharingOptimization(Function &F, SmallVector<Interesting
 
   for(auto share : FuncMetaMergers){
 
-    // errs() << "Looking at (maybe already checked): " << *share.TopTarget.getInsn() << "\n";
     // see if this access was not already instrumented (e.g., by loop optimization)
     if(!isOperInVector(share.TopTarget, OperandsToInstrument)) continue;
 
-    // errs() << "Metadata reuse top target: " << *share.TopTarget.getInsn() << "\n";
 
     int remaining_candidates = 0;
 
     // the sharing candidates: see if they do not already have a check
     for(InterestingMemoryOperand covered : share.ContainedOps){
-      // errs() << "\tCandidate: " << *covered.getInsn() << "\n";
       if(isOperInVector(covered, OperandsToInstrument)){
-        // errs() << "\tThis one can reuse: " << *covered.getInsn() << "\n";
         remaining_candidates++;
       }
     }
@@ -5058,8 +4463,6 @@ void SafeStack::getInterestingMemoryOperands(Instruction &I, SmallVectorImpl<Int
 }
 
 bool SafeStack::ChecksOnFunc(Function &F, ObjectSizeOffsetVisitor &ObjSizeVis) {
-  //errs() << "[Checks] Function: " << F.getName() << "\n";
-  // Code is based on AddressSanitizer
 
   // The load/store pointers to be instrumented
   SmallVector<InterestingMemoryOperand, 16> OperandsToInstrument;
@@ -5086,21 +4489,13 @@ bool SafeStack::ChecksOnFunc(Function &F, ObjectSizeOffsetVisitor &ObjSizeVis) {
     }
   }
   
-  //errs() << "--TARGETS Initially: " << OperandsToInstrument.size() << "---\n";
-  // for (InterestingMemoryOperand &MO : OperandsToInstrument) {
-  //   errs() << MO.toString() << "\n";
-  // }
-
-
   // --- Optimizations to reduce the number of checks ---
   // #1: Default ASan IsSafeAccess with SafeStack assumption
   // + ASAN--: Removing Unsatisfiable Checks
   OptStaticallySafeAccesses(ObjSizeVis, OperandsToInstrument); 
-  //errs() << "--TARGETS Remaining #1: " << OperandsToInstrument.size() << "---\n";
 
   // #2: Reverse the order of safe stack allocations: all remaining alloca uses are safe
   OptStaticallySafeAllocas(OperandsToInstrument);
-  //errs() << "--TARGETS Remaining #2: " << OperandsToInstrument.size() << "---\n";
 
   // #2-B: Unsafe stack accesses with constant offsets can be proven safe 
   OptStaticallySafeUnsafeStack(OperandsToInstrument);
@@ -5111,13 +4506,11 @@ bool SafeStack::ChecksOnFunc(Function &F, ObjectSizeOffsetVisitor &ObjSizeVis) {
 
   // #4: ASAN--: Optimizing Neighbor Checks (remove only, no merge)
   sequentialExecuteOptimizationBoost(F, OperandsToInstrument);
-  //errs() << "--TARGETS Remaining #3: " << OperandsToInstrument.size() << "---\n";
 
 
   // Classify into two clusters: ptr variant and invariant in loops
   SmallVector<InterestingMemoryOperand, 16> invariants;
   ClassifyLoopAccesses(F, OperandsToInstrument, invariants, &LI, &SE);
-  // errs() << "[Gather-debug]: Invariant ptrs: " << invariants.size() << ", Variant ptrs: " << variants.size() << "\n";
 
   // Gather BasicBlock-level metadata sharing candidates
   // but Block-level is useful for Loops: sharing within a BB implies loop body compatibility
@@ -5159,7 +4552,8 @@ bool SafeStack::ChecksOnFunc(Function &F, ObjectSizeOffsetVisitor &ObjSizeVis) {
 
   MinMaxMergingOptimization(F, OperandsToInstrument, MinMaxPairs, MinMaxChains, AA, &SE);
 
-  // #7: Metadata sharing optimization
+  // #8: Metadata sharing optimization
+  // Not useful based on benchmarks
   //MetadataSharingOptimization(F, OperandsToInstrument, FuncMetaMergers, AA, &SE);
 
   // Instrument remaining load/store targets with checks
@@ -5220,7 +4614,6 @@ void SafeStack::InstrumentCalls(Function &F) {
   // similarly for skipped globals
 
   for (MemIntrinsic *MI : intrins) {
-    // errs() << "RSan MI: " << *MI << " in " << F.getName() << "\n";
     IRBuilder<> IRB(MI);
     if (isa<MemTransferInst>(MI)) {
 
@@ -5246,7 +4639,6 @@ void SafeStack::InstrumentCalls(Function &F) {
         }
       }
       if(src_safe && dst_safe){
-        // errs() << "Skipping safe memtransfer*: " << *MI << "\n";
         continue;
       }
       else if(src_safe){ // unsafe dst
@@ -5270,12 +4662,10 @@ void SafeStack::InstrumentCalls(Function &F) {
 
       // statically safe
       if (isa<AllocaInst>(getUnderlyingObject(MI->getOperand(0)))) {
-        // errs() << "Skipping safe memset*: " << *MI << "\n";
         continue;
       }
       if (GlobalVariable *GV = dyn_cast<GlobalVariable>(getUnderlyingObject(MI->getOperand(0)))) {
         if(!shouldInstrumentGlobal(*GV)){
-          // errs() << "Skipping safe memset*: " << *MI << "\n";
           continue;
         }
       }
@@ -5297,7 +4687,6 @@ void AccumulateToVarStart(Value *V, SmallPtrSetImpl<Value*> &Visited, bool *foun
   V = V->stripPointerCastsAndAliases();
   if (Visited.count(V))
     return;
-  // errs() << "Exploring: " << *V << "\n";
   if(PHINode* phi = dyn_cast<PHINode>(V)){
     Visited.insert(phi);
     for(Value *Inc : phi->incoming_values()){
@@ -5351,7 +4740,6 @@ void SafeStack::MarkAllVarArgLoads(Function &F) {
       bool var_arg_load = false;
       AccumulateToVarStart(Load, Visited, &var_arg_load);
       if (var_arg_load) {
-        //errs() << "[Var Arg] Load: " << *Load << "\n";
         Load->setMetadata(F.getParent()->getMDKindID("swiftsan"),
                           llvm::MDNode::get(F.getContext(), std::nullopt));
       }
@@ -5493,11 +4881,9 @@ bool SafeStack::run() {
     };
     StringMap<StackInfo> UnsafeStacks;
     for (AllocaInst *AI : StaticAllocas){
-      // errs() << "Unsafe Alloca: " << *AI << "\n";
       UnsafeStacks[RT.getStackID(*AI)].StaticAllocas.push_back(AI);
     }
     for (Argument *Arg : ByValArguments){
-      // errs() << "Testing: ByValArgument: " << *Arg << "\n";
       UnsafeStacks[RT.getStackID(*Arg)].ByValArguments.push_back(Arg);
     }
 
@@ -5643,13 +5029,11 @@ bool SizedStackRuntime::finalize() {
     }
 
     Function *F = I->getParent()->getParent();
-    // errs() << "in Func: " << F->getName() << "\n";
     std::vector<size_t> toRestore;
     if(typeIndexNext > 0){ // there are unsafe stacks
       for(size_t sid = 0; sid < typeIndexNext; sid++){
         if(std::find(e.second.begin(), e.second.end(), sid) == e.second.end()){
           toRestore.push_back(sid);
-          // errs() << "We need to add restoration for: " << sid << "\n";
         }
       }
     }
@@ -5894,7 +5278,6 @@ public:
     if (!F.hasFnAttribute(Attribute::SafeStack)) {
       LLVM_DEBUG(dbgs() << "[SafeStack]     safestack is not requested"
                            " for this function\n");
-      //errs() << "Skip (No SafeStack attr): " << F.getName() << "\n";
       return false;
     }
 
@@ -5987,7 +5370,7 @@ public:
   bool runOnModule(Module &M) override {
 
     if(ClDelayInstrumentation){
-      errs() << "ClDelayInstrumentation was set, two-stage LTO... do not instrument here\n";
+      errs() << "ClDelayInstrumentation was set, two-stage LTO... do not instrument yet\n";
       return false;
     }
 
@@ -6037,7 +5420,6 @@ public:
 
     for (Function &F : M) {
       bool instrument = shouldInstrument(F);
-      //errs() << "RSan Function: " << F.getName() << " Instrument? " << instrument << "\n";
       if (instrument) {
         Changed |= runOnFunction(F, RT);
       }
