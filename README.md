@@ -88,4 +88,30 @@ use after free...
 ```
 
 ## Benchmarks
+### SPEC CPU
 TODO
+
+### Juliet Test Suite
+Execute the following command (assuming implicit tagging as target: `rsan-impl_O0`, otherwise: `rsan-expl_O0`)  
+Note that we run Juliet with optimization flag `-O0`, because standard optimizations (e.g., `-O2`) hide bugs in the test cases.  
+`python3 setup.py run juliet rsan-impl_O0 --build --parallel=proc --parallelmax=$(nproc) --cwe 121 122 124 126 127 415 416`
+
+Expected output (in any order):  
+```
+[INFO] CWE127: Passed 1001/1001 GOOD tests
+[INFO] CWE127: Passed 1001/1001 BAD tests
+[INFO] CWE121: Passed 2885/2885 GOOD tests
+[INFO] CWE121: Passed 2885/2885 BAD tests
+[INFO] CWE416: Passed 374/374 GOOD tests
+[INFO] CWE416: Passed 374/374 BAD tests
+[INFO] CWE124: Passed 1001/1001 GOOD tests
+[INFO] CWE124: Passed 1001/1001 BAD tests
+[INFO] CWE126: Passed 657/657 GOOD tests
+[INFO] CWE126: Passed 657/657 BAD tests
+[INFO] CWE415: Passed 799/799 GOOD tests
+[INFO] CWE415: Passed 799/799 BAD tests
+[INFO] CWE122: Passed 3365/3365 GOOD tests
+[INFO] CWE122: Passed 3365/3365 BAD tests
+```
+
+Feel free to also test Juliet with AddressSanitizer (ASan): change the target of setup.py from `rsan-impl_O0` to `asan_O0`.
