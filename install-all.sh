@@ -48,7 +48,7 @@ if [[ ! -f $RSAN_TC_BASE_BUILD/lib/libtcmalloc.a ]]; then
     cd $ROOT_DIR
     git clone https://github.com/gperftools/gperftools.git --branch gperftools-2.15 tcmalloc-baseline
     cd $RSAN_TC_BASE
-    libtoolize
+    autoreconf -i
     ./autogen.sh || true
 
     mkdir -p $ROOT_DIR/tcmalloc-baseline-build
@@ -61,10 +61,8 @@ fi
 # Build TCMalloc-implicit: currently assumes x86
 if [ $ARCH == "x86_64" ] && [[ ! -f $RSAN_TC_IMPL_BUILD/lib/libtcmalloc.a ]]; then
     cd $RSAN_TC_IMPL
-    libtoolize
-    echo "a...."
+    autoreconf -i
     ./autogen.sh || true
-    echo "b..."
 
     mkdir -p $RSAN_TC_IMPL_BUILD
     cd $RSAN_TC_IMPL_BUILD
@@ -75,7 +73,7 @@ if [ $ARCH == "x86_64" ] && [[ ! -f $RSAN_TC_IMPL_BUILD/lib/libtcmalloc.a ]]; th
 # Build TCMalloc-explicit: currently assumes Arm TBI (Intel LAM support in a different RSan branch)
 elif [ $ARCH == "aarch64" ] && [[ ! -f $RSAN_TC_EXPL_BUILD/lib/libtcmalloc.a ]]; then
     cd $RSAN_TC_EXPL
-    libtoolize
+    autoreconf -i
     ./autogen.sh || true
 
     mkdir -p $RSAN_TC_EXPL_BUILD

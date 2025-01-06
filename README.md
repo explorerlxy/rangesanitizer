@@ -12,7 +12,7 @@
 | `tcmalloc-implicit` | Modified TCMalloc 2.15 for memory allocation with metadata (implicit tagging) |
 | `tcmalloc-explicit` | Modified TCMalloc 2.15 for memory allocation with metadata (explicit tagging) |
 | `env.sh` | Script to configure the running environment |
-| `install.sh` | Script to automatically install RSan |
+| `install-all.sh` | Script to automatically install RSan |
 | `setup.py` | Script to drive the instrumentation infra |
 
 ## Dependencies
@@ -47,7 +47,7 @@ The installation script installs RSan with implicit tagging on x86 or explicit t
 On Arm, we assume the system has Arm TBI (Top Byte Ignore) available.  
 
 ```
-./install.sh
+./install-all.sh
 ```
 
 ## Test if RSan is working
