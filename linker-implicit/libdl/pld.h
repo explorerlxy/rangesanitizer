@@ -14,7 +14,6 @@
 
 /* Stack Utilities */
 static const rlim_t DEFAULT_STACK_SIZE = 16 * 1024 * 1024; // 16 MB
-#define STACK_END       0x10000000000ULL
 
 // https://github.com/gcc-mirror/gcc/blob/master/include/safe-ctype.h#L93
 // https://github.com/gcc-mirror/gcc/blob/master/libiberty/safe-ctype.c#L158

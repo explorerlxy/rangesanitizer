@@ -114,6 +114,7 @@ if __name__ == "__main__":
 
     if os.path.exists(SPEC2006_DIR):
         setup.add_target(infra.targets.SPEC2006(
+            force_cpu = 0,
             source = SPEC2006_DIR,
             source_type="installed",
             patches = ["asan", "rsan"],

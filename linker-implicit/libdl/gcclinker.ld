@@ -1,7 +1,10 @@
+# This is the default gcc linker script, with one single addition:
+# . = 0x7000A00000 + SIZEOF_HEADERS; # make sure pld does not map in high (instrumented) address space
+
 SECTIONS
 {
   PROVIDE (__executable_start = SEGMENT_START("text-segment", 0)); . = SEGMENT_START("text-segment", 0) + SIZEOF_HEADERS;
-  . = 0xA00000 + SIZEOF_HEADERS; # make sure pld does not map in high address space
+  . = 0x7000A00000 + SIZEOF_HEADERS; # make sure pld does not map in high (instrumented) address space
   .interp         : { *(.interp) }
   .note.gnu.build-id  : { *(.note.gnu.build-id) }
   .hash           : { *(.hash) }
