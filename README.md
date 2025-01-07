@@ -131,7 +131,7 @@ This is an example expected output (results may vary across devices):
 
 Geomean overhead aggregates can be calculated by dividing each entry by the baseline entry, and then taking the geomean of the decimal multipliers.  
 For the runtime results of the output above, this gives `51%` overhead for RSan, and `94%` for ASan:  
-| Benchmark      | **Base** | **RSan** | **RSan** | **ASan** | **ASan** |
+| Benchmark      | **Base** | **RSan** | **RSan/Base** | **ASan** | **ASan/Base** |
 |----------------|:--------:|:--------:|:--------:|:--------:|:--------:|
 | 400.perlbench  |    107   |    208   |   1.94   |    442   |   4.13   |
 | 401.bzip2      |    196   |    300   |   1.53   |    297   |   1.52   |
