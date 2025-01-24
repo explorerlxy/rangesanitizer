@@ -184,3 +184,8 @@ Expected output (in any order):
 ```
 
 Feel free to also test Juliet with AddressSanitizer (ASan): change the target of setup.py from `rsan-impl_O0` to `asan_O0`.
+
+## Troubleshooting
+If ASan randomly crashes sometimes, this is likely due to [recent changes](https://llbit.github.io/programming/2024/03/19/aslr-asan-problem.html) to ASLR in the Linux kernel.  
+Currently, the workaround is:
+`sudo sysctl vm.mmap_rnd_bits=28`
