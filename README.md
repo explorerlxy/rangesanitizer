@@ -1,6 +1,8 @@
 # RangeSanitizer
 **RangeSanitizer** (RSan) detects spatial and temporal memory errors in C/C++ programs using efficient range checks.  
 
+**Paper**: https://download.vusec.net/papers/rsan_sec25.pdf
+
 ## Contents
 
 | File | Description |
