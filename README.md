@@ -23,7 +23,7 @@ Tested on:
 * (Arm) - Apple M2 - Debian 12 - glibc 2.36 - Asahi Linux kernel v6.4.0  
 
 ```
-sudo apt install ninja-build cmake gcc-9 autoconf2.69 bison build-essential flex texinfo libtool zlib1g-dev unzip
+sudo apt install ninja-build cmake gcc-9 autoconf2.69 bison build-essential flex texinfo libtool zlib1g-dev unzip gawk
 pip3 install psutil terminaltables
 ```
 
