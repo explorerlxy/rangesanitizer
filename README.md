@@ -10,7 +10,7 @@
 | `examples` | Example C programs to test the basic functionality of RSan |
 | `infra` | Infrastructure to run benchmarks with compiler/allocator instrumentation |
 | `linker-implicit` | Linker script (globals) and custom dynamic linker for implicit tagging |
-| `llvm-project-16` | Modified LLVM 16.0.6 for compiler instrumentation |
+| `llvm-project-16` | Modified LLVM 16.0.6 for compiler instrumentation (see `llvm/lib/CodeGen/SafeStack.cpp`) |
 | `tcmalloc-implicit` | Modified TCMalloc 2.15 for memory allocation with metadata (implicit tagging) |
 | `tcmalloc-explicit` | Modified TCMalloc 2.15 for memory allocation with metadata (explicit tagging) |
 | `env.sh` | Script to configure the running environment |
