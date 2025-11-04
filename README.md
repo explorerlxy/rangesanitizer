@@ -1,7 +1,7 @@
 # RangeSanitizer
 **RangeSanitizer** (RSan) detects spatial and temporal memory errors in C/C++ programs using efficient range checks.  
 
-**Paper**: https://download.vusec.net/papers/rsan_sec25.pdf
+**Paper @ USENIX Security 2025**: https://download.vusec.net/papers/rsan_sec25.pdf
 
 ## Contents
 
@@ -10,12 +10,14 @@
 | `examples` | Example C programs to test the basic functionality of RSan |
 | `infra` | Infrastructure to run benchmarks with compiler/allocator instrumentation |
 | `linker-implicit` | Linker script (globals) and custom dynamic linker for implicit tagging |
-| `llvm-project-16` | Modified LLVM 16.0.6 for compiler instrumentation (see `llvm/lib/CodeGen/SafeStack.cpp`) |
+| `llvm-project-16` | Modified LLVM 16.0.6 for compiler instrumentation*  |
 | `tcmalloc-implicit` | Modified TCMalloc 2.15 for memory allocation with metadata (implicit tagging) |
 | `tcmalloc-explicit` | Modified TCMalloc 2.15 for memory allocation with metadata (explicit tagging) |
 | `env.sh` | Script to configure the running environment |
 | `install-all.sh` | Script to automatically install RSan |
 | `setup.py` | Script to drive the instrumentation infra |
+
+\* _see `llvm/lib/CodeGen/SafeStack.cpp`_
 
 ## Dependencies
 Tested on:  
