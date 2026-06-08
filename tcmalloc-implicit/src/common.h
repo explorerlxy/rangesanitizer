@@ -67,9 +67,16 @@ typedef uintptr_t Length;
 /* Heap Quarantine */
 #define ENABLE_QUARANTINE 1
 
+/* MemTag-based temporal safety (disables quarantine when enabled) */
+#define ENABLE_MEMTAG 1
+#if ENABLE_MEMTAG
+  #undef ENABLE_QUARANTINE
+  #define ENABLE_QUARANTINE 0
+#endif
+
 /* with a max of 64 power-of-two size classes (2^64 on 64-bit)
 we require a total of 6 bits to signify the size class (2^6 = 64).
-with a 48-bit virtual address space, 
+with a 48-bit virtual address space,
 we use bits 41-47 to represent the implicit tag */
 #define BB_TAG_SHIFT 41
 
@@ -78,10 +85,40 @@ we use bits 41-47 to represent the implicit tag */
 #define CLASS_TO_BB_TAG(class)   (class+2)
 
 /* find start of object */
-#define PTR_GET_OBJ_START(ptr, sc) ((uintptr_t)(ptr) ^ (_bzhi_u64((unsigned long long)ptr, sc)))
-// #define PTR_GET_OBJ_START(ptr, sc)  (((uintptr_t)(ptr) >> (uintptr_t)(sc)) << (uintptr_t)(sc))
+// #define PTR_GET_OBJ_START(ptr, sc) ((uintptr_t)(ptr) ^ (_bzhi_u64((unsigned long long)ptr, sc)))
+#define PTR_GET_OBJ_START(ptr, sc)  (((uintptr_t)(ptr) >> (uintptr_t)(sc)) << (uintptr_t)(sc))
 
-#define PTR_GET_TAG(x)      ((uintptr_t)(x) >> BB_TAG_SHIFT)
+#if ENABLE_MEMTAG
+  /* MemTag uses bits 62-57 (high 6 bits of LAM U57) */
+  #define MEMTAG_SHIFT 57
+  #define MEMTAG_MASK   0x3FULL
+  #define MEMTAG_BITS   (MEMTAG_MASK << MEMTAG_SHIFT)
+
+	#define PTR_CLEAR_MEMTAG(x)     ((uint64_t)(x) & ~MEMTAG_BITS)
+	#define PTR_SET_MEMTAG(x, tag)  ((uint64_t)(x) | ((uint64_t)(tag) << MEMTAG_SHIFT))
+	// SizeTag via (x >> 41) & 0xFFFF — avoids 64-bit movabs for ~MEMTAG_BITS
+	#define PTR_GET_TAG(x)          (((uintptr_t)(x) >> BB_TAG_SHIFT) & 0xFFFF)
+
+	/* Temporal check threshold: |meta - ptr| > (1<<56) indicates MemTag mismatch */
+	#define MEMTAG_THRESHOLD  (1ULL << 56)
+
+	/* Derive MemTag from TSC (no memory access, pure register operation) */
+	#define MEMTAG_FROM_TSC()  ((uint8_t)(__builtin_ia32_rdtsc() & 0x3F))
+
+	/* Unified temporal+spatial check: meta-(target+n) > (THRESHOLD-n) → error.
+	   Underflow (spatial) → huge diff > limit.  MemTag mismatch → diff > limit. */
+	#define MEMTAG_CHECK(meta, target, n) \
+	  ((meta) - ((uint64_t)(target) + (n)) > (MEMTAG_THRESHOLD - (n)))
+
+	
+#else
+  #define MEMTAG_BITS  ((uint64_t)0)
+  #define PTR_GET_MEMTAG(x)     ((uint8_t)0)
+  #define PTR_SET_MEMTAG(x, t)  ((uint64_t)(x))
+  #define PTR_CLEAR_MEMTAG(x)   ((uint64_t)(x))
+
+  #define PTR_GET_TAG(x)      ((uintptr_t)(x) >> BB_TAG_SHIFT)
+#endif
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 

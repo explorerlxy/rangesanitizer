@@ -98,7 +98,7 @@ void CentralFreeList::ReleaseListToSpans(void* start) {
 }
 
 void CentralFreeList::ReleaseToSpans(void* object) {
-  const PageID p = reinterpret_cast<uintptr_t>(object) >> kPageShift;
+  const PageID p = (uintptr_t)PTR_CLEAR_MEMTAG((uint64_t)object) >> kPageShift;
   Span* span = Static::pageheap()->GetDescriptor(p);
   ASSERT(span != NULL);
   ASSERT(span->refcount > 0);

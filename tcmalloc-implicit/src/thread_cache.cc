@@ -40,6 +40,11 @@
 #include "base/spinlock.h"              // for SpinLockHolder
 #include "getenv_safe.h"                // for TCMallocGetenvSafe
 #include "central_freelist.h"           // for CentralFreeListPadded
+#if ENABLE_MEMTAG
+#include <sys/prctl.h>                  // for prctl (LAM enable)
+#include <sys/syscall.h>                // for syscall
+#include <unistd.h>
+#endif
 
 using std::min;
 using std::max;
@@ -286,6 +291,16 @@ void ThreadCache::InitModule() {
     if (phinited) {
       return;
     }
+#if ENABLE_MEMTAG
+    // Enable Intel LAM U57: tag is 6 bits (bits 57-62)
+    // arch_prctl(ARCH_ENABLE_TAGGED_ADDR, num_tag_bits) — takes NUMBER of tag bits
+    {
+      long lr = syscall(SYS_arch_prctl, 0x4002 /*ARCH_ENABLE_TAGGED_ADDR*/, 6 /*LAM_U57_BITS*/);
+      // Verify LAM was enabled
+      unsigned long untag = 0;
+      syscall(SYS_arch_prctl, 0x4001 /*ARCH_GET_UNTAG_MASK*/, &untag);
+    }
+#endif
 #ifdef BASEBOUNDS_X86
 #if ENABLE_QUARANTINE == 1
     pthread_mutex_init(Static::get_ring_lock(), NULL);

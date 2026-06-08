@@ -917,7 +917,7 @@ class TCMallocImplementation : public MallocExtension {
   // faster.  This is important on OS X, where this function is called
   // on every allocation operation.
   virtual Ownership GetOwnership(const void* ptr) {
-    const PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
+    const PageID p = (uintptr_t)PTR_CLEAR_MEMTAG((uint64_t)ptr) >> kPageShift;
     // The rest of tcmalloc assumes that all allocated pointers use at
     // most kAddressBits bits.  If ptr doesn't, then it definitely
     // wasn't alloacted by tcmalloc.
@@ -1168,7 +1168,7 @@ static TCMallocGuard module_enter_exit_hook;
 //-------------------------------------------------------------------
 
 static ATTRIBUTE_UNUSED bool CheckCachedSizeClass(void *ptr) {
-  PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
+  PageID p = (uintptr_t)PTR_CLEAR_MEMTAG((uint64_t)ptr) >> kPageShift;
   uint32 cached_value;
   if (!Static::pageheap()->TryGetSizeClass(p, &cached_value)) {
     return true;
@@ -1414,7 +1414,15 @@ static void* do_malloc_pages(ThreadCache* heap, size_t size) {
       result = (void*)(span->start << kPageShift);
 
       // store the end addr in metadata before the object
-      *(uint64_t*)((char*)(result)-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)((char*)result + requested_size);
+      #if ENABLE_MEMTAG
+            uint64_t* meta_ptr = (uint64_t*)((char*)(result)-BASEBOUNDS_X86_METADATA_OFFSET);
+            uint8_t memtag = MEMTAG_FROM_TSC();
+            uint64_t end_addr = (uint64_t)((char*)result + requested_size);
+            *meta_ptr = PTR_SET_MEMTAG(end_addr, memtag);
+            result = (void*)PTR_SET_MEMTAG((uint64_t)result, memtag);
+#else
+            *(uint64_t*)((char*)(result)-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)((char*)result + requested_size);
+#endif
     }
 #else
     Span* span = Static::pageheap()->New(num_pages);
@@ -1469,10 +1477,18 @@ ATTRIBUTE_ALWAYS_INLINE inline void* do_malloc(size_t size) {
   char *result = (char*)cache->Allocate(allocated_size, cl, nop_oom_handler);
 
   // store the end addr in metadata before the object
+#if ENABLE_MEMTAG
+  uint64_t* meta_ptr = (uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET);
+  uint8_t memtag = MEMTAG_FROM_TSC();
+  uint64_t end_addr = (uint64_t)(result + requested_size);
+  *meta_ptr = PTR_SET_MEMTAG(end_addr, memtag);
+  return (void*)PTR_SET_MEMTAG((uint64_t)result, memtag);
+#else
   *(uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)(result + requested_size);
 
   // return the size-class aligned and implicitly tagged pointer
   return (void*)result;
+#endif
 #else
   // The common case, and also the simplest.  This just pops the
   // size-appropriate freelist, after replenishing it if it's empty.
@@ -1525,7 +1541,7 @@ static ATTRIBUTE_NOINLINE void do_free_pages(Span* span, void* ptr) {
   CHECK_CONDITION_PRINT(span->location == Span::IN_USE,
                         "Object was not in-use");
   CHECK_CONDITION_PRINT(
-      span->start << kPageShift == reinterpret_cast<uintptr_t>(ptr),
+      span->start << kPageShift == (uintptr_t)PTR_CLEAR_MEMTAG((uint64_t)ptr),
       "Pointer is not pointing to the start of a span");
 
   Static::pageheap()->PrepareAndDelete(span, [&] () {
@@ -1545,7 +1561,7 @@ static ATTRIBUTE_NOINLINE void do_free_pages(Span* span, void* ptr) {
 // bypassing addr -> size class checks. So in this validation code we
 // also assume that sized delete is always used with "our" pointers.
 bool ValidateSizeHint(void* ptr, size_t size_hint) {
-  const PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
+  const PageID p = (uintptr_t)PTR_CLEAR_MEMTAG((uint64_t)ptr) >> kPageShift;
   Span* span  = Static::pageheap()->GetDescriptor(p);
   uint32 cl = 0;
   Static::sizemap()->GetSizeClass(size_hint, &cl);
@@ -1707,19 +1723,31 @@ void do_free_with_callback(void* ptr,
   ThreadCache* heap = ThreadCache::GetCacheIfPresent();
 
 #ifdef BASEBOUNDS_X86
-  // get the size class tag from the upper bits
-  uint32 tag = (uint32) PTR_GET_TAG(ptr);
+  // strip memtag for tag extraction and metadata lookup
+  uintptr_t canonical_ptr = PTR_CLEAR_MEMTAG((uint64_t)ptr);
+  uint32 tag = (uint32) PTR_GET_TAG((void*)canonical_ptr);
 
   // find the corresponding metadata
-  uint64_t* meta_ptr = (uint64_t*)((char*)ptr-BASEBOUNDS_X86_METADATA_OFFSET);
+  uint64_t* meta_ptr = (uint64_t*)((char*)canonical_ptr - BASEBOUNDS_X86_METADATA_OFFSET);
+  uint64_t meta = *meta_ptr;
 
-  // check for double free
+#if ENABLE_MEMTAG
+  // double-free / UAF check: |meta - ptr| > (1<<56) → MemTag mismatch
+  if (MEMTAG_CHECK(meta, ptr, 0)) {
+    tcmalloc::swiftsan_error();
+  }
+  // Flip metadata: ~meta changes MemTag for next detection
+  *meta_ptr = 0;
+  // Strip MemTag for downstream internal code
+  ptr = (void*)canonical_ptr;
+#else
+  // check for double free (old method: bound == 0)
   if(*meta_ptr == 0) {
     tcmalloc::swiftsan_error();
   }
-
   // clear the metadata upon free to detect UAF
   *meta_ptr = 0;
+#endif
 #endif
 
   const PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
@@ -1816,7 +1844,7 @@ inline size_t GetSizeWithCallback(const void* ptr,
                                   size_t (*invalid_getsize_fn)(const void*)) {
   if (ptr == NULL)
     return 0;
-  const PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
+  const PageID p = (uintptr_t)PTR_CLEAR_MEMTAG((uint64_t)ptr) >> kPageShift;
   uint32 cl;
   if (Static::pageheap()->TryGetSizeClass(p, &cl)) {
     return Static::sizemap()->ByteSizeForClass(cl);
@@ -1849,8 +1877,9 @@ ATTRIBUTE_ALWAYS_INLINE inline void* do_realloc_with_callback(
 #ifdef BASEBOUNDS_X86
   // old_ptr is guaranteed to be != NULL here
   // get original object size from metadata
-  char* end_of_obj = (char*)*(uint64_t*)((char*)old_ptr-BASEBOUNDS_X86_METADATA_OFFSET);
-  const size_t old_size = (size_t)(end_of_obj-(char*)old_ptr);
+  uint64_t raw_meta = *(uint64_t*)((char*)old_ptr-BASEBOUNDS_X86_METADATA_OFFSET);
+  char* end_of_obj = (char*)PTR_CLEAR_MEMTAG(raw_meta);
+  const size_t old_size = (size_t)(end_of_obj-(char*)PTR_CLEAR_MEMTAG((uint64_t)old_ptr));
 #else
   const size_t old_size = GetSizeWithCallback(old_ptr, invalid_get_size_fn);
 #endif
@@ -1892,8 +1921,16 @@ ATTRIBUTE_ALWAYS_INLINE inline void* do_realloc_with_callback(
     MallocHook::InvokeDeleteHook(old_ptr);
     MallocHook::InvokeNewHook(old_ptr, new_size);
 #ifdef BASEBOUNDS_X86
-    // local resize: update the metadata size field
+    // local resize: update the metadata size field, preserving memtag
+#if ENABLE_MEMTAG
+    uint64_t* meta_ptr = (uint64_t*)((char*)old_ptr-BASEBOUNDS_X86_METADATA_OFFSET);
+    uint64_t old_meta = *meta_ptr;
+	    uint8_t old_memtag = (uint8_t)(old_meta >> MEMTAG_SHIFT);
+    uint64_t new_end = (uint64_t)((char*)old_ptr + new_size);
+    *meta_ptr = PTR_SET_MEMTAG(new_end, old_memtag);
+#else
     *(uint64_t*)((char*)old_ptr-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)((char*)old_ptr + new_size);
+#endif
 #endif
     return old_ptr;
   }
@@ -1939,7 +1976,15 @@ void* do_memalign_pages(size_t align, size_t size) {
   char *result = (char*)(span->start << kPageShift);
 
   // store the end addr in metadata before the object
-  *(uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)(result + requested_size);
+#if ENABLE_MEMTAG
+      uint64_t* meta_ptr = (uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET);
+      uint8_t memtag = MEMTAG_FROM_TSC();
+      uint64_t end_addr = (uint64_t)(result + requested_size);
+      *meta_ptr = PTR_SET_MEMTAG(end_addr, memtag);
+      result = (char*)PTR_SET_MEMTAG((uint64_t)result, memtag);
+#else
+      *(uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)(result + requested_size);
+#endif
 
   // TODO: do we uphold the requested alignment? probably
   // return the size-class aligned and tagged pointer
@@ -2209,11 +2254,18 @@ static void * malloc_fast_path(size_t size) {
 #ifdef BASEBOUNDS_X86
   char *result = (char*)cache->Allocate(allocated_size, cl, OOMHandler);
 
-  // store the end addr in metadata before the object
+#if ENABLE_MEMTAG
+  uint64_t* meta_ptr = (uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET);
+  uint8_t memtag = MEMTAG_FROM_TSC();
+  uint64_t end_addr = (uint64_t)(result + requested_size);
+  *meta_ptr = PTR_SET_MEMTAG(end_addr, memtag);
+  return (void*)PTR_SET_MEMTAG((uint64_t)result, memtag);
+#else
   *(uint64_t*)(result-BASEBOUNDS_X86_METADATA_OFFSET) = (uint64_t)(result + requested_size);
 
   // return the size-class aligned and tagged pointer
   return (void*)result;
+#endif
 #else
   return CheckedMallocResult(cache->Allocate(allocated_size, cl, OOMHandler));
 #endif
@@ -2562,23 +2614,22 @@ extern "C" PERFTOOLS_DLL_DECL void* tc_malloc_skip_new_handler(size_t size)  PER
 
 #ifdef BASEBOUNDS_X86
 static inline void swiftsan_check_n(void *target, size_t n) {
-  // since the target gets offset by a certain range operation,
-  // the last byte is not dereferenced/accessed
-  // e.g., memset(ptr, 0, 30) --> access is [ptr, ptr+29] i.e. [ptr, ptr+30)
-  // hence, since ptr+30 is exclusive, we check target > end_addr (not >=)
-  // this saves trouble with having to offset the size by -1, and potentially underflowing with size 0
-  // make sure to perform the metadata lookup on the start address of the operation, to catch underflows
-  // (instead of looking up metadata on the offsetted ptr)
-  uint64_t sc = PTR_GET_TAG(target);
-  uint64_t* meta_ptr = (uint64_t*)((char*)PTR_GET_OBJ_START(target, sc) - BASEBOUNDS_X86_METADATA_OFFSET);
-  uint64_t end_addr = *meta_ptr;
-  // check if target+offset address is in bounds
-  if((uintptr_t)((char*)(target)+n) > end_addr) {
-    // slow check to filter out uninstrumented accesses (rare)
-    if(sc != 0){
-      // fprintf(stderr, "SwiftSan-Invalid-Check: ptr %p end_addr %p\n", target, (void*)end_addr);
+  uint64_t sc = ((uint64_t)target >> BB_TAG_SHIFT) & 0xFFFF;
+  if (__builtin_expect(sc != 0, 1)) {
+    uint64_t obj_start = ((uint64_t)target >> sc) << sc;
+    // Offset -8 folded into x86 addressing mode: movq -8(%rax), %rXX
+    uint64_t meta = *(uint64_t*)(obj_start - BASEBOUNDS_X86_METADATA_OFFSET);
+
+  #if ENABLE_MEMTAG
+    // Unified temporal+spatial: meta-(target+n) > (THRESHOLD-n) → error
+    if (__builtin_expect(MEMTAG_CHECK(meta, target, n), 0)) {
       tcmalloc::swiftsan_error();
     }
+  #else
+    if ((uintptr_t)((char*)target + n) > meta) {
+      tcmalloc::swiftsan_error();
+    }
+  #endif
   }
 }
 

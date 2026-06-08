@@ -150,6 +150,10 @@ const std::string interceptPrefix = "swiftsan_";
 bool isImplicitTagging; 
 // if false: assume AArch64
 bool isX86;
+static constexpr uint64_t IMPLICIT_MEMTAG_SHIFT = 57;
+static constexpr uint64_t EXPLICIT_MEMTAG_SHIFT = 56;
+static constexpr uint64_t MEMTAG_THRESHOLD = 1ULL << 56;
+static constexpr uint64_t MAX_SIZE_CLASS_SHIFT = 43;  // shr-43 zero-comparison optimization
 Type* cursedType;
 
 using OffsetDir = uint8_t;
@@ -1072,7 +1076,9 @@ class SafeStack {
   // Checks
   bool ChecksOnFunc(Function &F, ObjectSizeOffsetVisitor &ObjSizeVis);
   std::tuple<Value *, Value *> InsertCheck(Instruction &I, Value &addr, bool write, Type* ptrType);
-  std::tuple<Value *, Value *> InsertCheckMeta(Instruction &I, Value &addr, bool write, Type* ptrType, Value *EndOfObj, Value *Tag, bool slowZero);
+#if 0
+  std::tuple<Value *, Value *> InsertCheckMeta(Instruction &I, Value &addr, bool write, Type* ptrType, Value *EndOfObj);
+#endif
   void InsertCheckRange(Instruction &I, Value *start, Value *end, Type* ptrType);
   void AccumulateToUnsafeStackAlloca(Value *V, SmallPtrSetImpl<Value*> &Visited, Value **found, Constant **og_size);
   Constant* getUnsafeStackObjOgSize(Value *V);
@@ -1815,6 +1821,7 @@ static SmallVector<BasicBlock*, N> findDominancePathBetween(
   SmallVector<BasicBlock*, N> Path;
   bool Success = findDominancePathBetween(A, B, Path, DT, DF);
   assert(Success);
+  (void)Success;
   return Path;
 }
 
@@ -1990,441 +1997,231 @@ void SafeStack::InsertCheckRange(Instruction &I, Value *start, Value *end, Type*
   Function *F = I.getParent()->getParent();
   Module *M = F->getParent();
   LLVMContext &C = F->getContext();
-  IRBuilder<> builder(C);
+  // Tag insertion point as needing a runtime check (SmartMixSan analysis marker)
+  I.setMetadata(M->getMDKindID("rsan_check"), llvm::MDNode::get(C, std::nullopt));
+  IRBuilder<> Builder(&I);
 
-  IntegerType *IntPtrTy = DL.getIntPtrType(M->getContext());
-  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
-  Type *Int64PtrTy = PointerType::get(Int64Ty, 0); 
+  IntegerType *Int64Ty = Type::getInt64Ty(C);
 
-  // insert check before the load/store
-  builder.SetInsertPoint(&I);
+  uint64_t tag_shift = isImplicitTagging ? 41 : 56;
 
-  Value *Target = start; // lookup metadata on 'start'
+  Value *StartVal = Builder.CreatePtrToInt(start, Int64Ty, "start_val");
+  Value *EndPtrVal = Builder.CreatePtrToInt(end, Int64Ty, "end_val");
+  // Hot path: no AND — x86 hw masks shift count. IsTagged still works:
+  // (ptr>>shift)!=0 iff has SizeTag or MemTag, i.e. instrumented.
+  Value *SizeTag = Builder.CreateLShr(StartVal, Builder.getInt64(tag_shift), "swiftsan.sc");
+  Value *IsTagged = Builder.CreateICmpNE(SizeTag, Builder.getInt64(0));
 
-  // the end address we compare against for validity
-  Value *EndOfObj;
-  // only used if !bypass, but later needed for slow check
-  Value *Tag = nullptr;
-  uint64_t tag_shift = 0;
-  if(isImplicitTagging)
-    tag_shift = 41;
-  else
-    tag_shift = 56; // TBI
+  Instruction *SlowTerm = SplitBlockAndInsertIfThen(IsTagged, &I, false, nullptr, &DT, &LI, nullptr);
+  IRBuilder<> SlowBuilder(SlowTerm);
 
-  // this sets up a load at the base-8
-  Value *PtrAsInt = builder.CreatePtrToInt(Target, IntPtrTy);
-  // tag = ptr >> 56
-  Tag = builder.CreateLShr(PtrAsInt, ConstantInt::get(Int64Ty, tag_shift)); 
+  Value *ObjStart;
+  ObjStart = SlowBuilder.CreateLShr(StartVal, SizeTag);
+  ObjStart = SlowBuilder.CreateShl(ObjStart, SizeTag, "obj_start");
+  Value *MetaPtrVal = SlowBuilder.CreateSub(ObjStart, SlowBuilder.getInt64(8), "meta_ptr_val");
+  Value *MetaPtr = SlowBuilder.CreateIntToPtr(MetaPtrVal, PointerType::get(C, 0), "meta_ptr");
+  LoadInst *Meta = SlowBuilder.CreateLoad(Int64Ty, MetaPtr, "meta");
+  Meta->setAlignment(Align(8));
 
-  Value *MetadataOffset;
-  if(isX86){ // BZHI
-    // mask = BZHI(ptr, tag)
-    Value *BZHImask = builder.CreateIntrinsic(Int64Ty, Intrinsic::x86_bmi_bzhi_64, {PtrAsInt, Tag});
-    // base = ptr XOR mask
-    Value *BZHIbase = builder.CreateXor(BZHImask, PtrAsInt);
-    // meta = base - 8
-    MetadataOffset = builder.CreateSub(BZHIbase, ConstantInt::get(Int64Ty, 8));
-
-  }
-  else{ // ptr & (-1 << tag) (or: (ptr >> tag) << tag)
-    Value *TagMask = builder.CreateShl(ConstantInt::get(Int64Ty, -1), Tag);
-    PtrAsInt = builder.CreateAnd(PtrAsInt, TagMask);
-    MetadataOffset = builder.CreateSub(PtrAsInt, ConstantInt::get(Int64Ty, 8)); // meta = base-8
-  }
-  
-  // meta*
-  Value *MetadataPtr = builder.CreateIntToPtr(MetadataOffset, Int64PtrTy);
-  // end_of_obj = *meta;
-  EndOfObj = builder.CreateLoad(Int64PtrTy, MetadataPtr);
-
-  // note that we did the metadata lookup on the original pointer (for underflows)
-  // and now we offset by the access size for the check
-  Value* TargetFull = end; // comparisong on 'end'
-
-  // Get the access size of the memory operation
-  TypeSize size = DL.getTypeStoreSize(ptrType);
-  // if it concerns a larger than 1-byte access, we offset the address
-  if(size > 1) {
-    Value *AccessSize = ConstantInt::get(F->getContext(), APInt(IntPtrTy->getBitWidth(), size-1));
-    // Offset the to-be-checked address by the access size
-    std::vector<Value *> indizes = {AccessSize};
-    TargetFull = builder.CreateInBoundsGEP(builder.getInt8Ty(), Target, indizes);
+  uint64_t AccessSizeVal = 1;
+  if(ptrType != nullptr){
+    TypeSize size = DL.getTypeStoreSize(ptrType);
+    if(!size.isScalable()) AccessSizeVal = size.getFixedValue();
   }
 
-  // compare target >= end_addr (unsigned greater or equal)
-  Value *cmp = builder.CreateICmp(CmpInst::Predicate::ICMP_UGE, TargetFull, EndOfObj);
+  // shr-43 zero-comparison: (Meta - (Ptr+n)) >> 43 != 0 -> error
+  EndPtrVal = SlowBuilder.CreateAdd(EndPtrVal,
+      SlowBuilder.getInt64(AccessSizeVal), "target_end");
+  Value *Diff = SlowBuilder.CreateSub(Meta, EndPtrVal, "chk_diff");
+  Value *DiffScaled = SlowBuilder.CreateLShr(Diff,
+      SlowBuilder.getInt64(MAX_SIZE_CLASS_SHIFT));
+  Value *Failed = SlowBuilder.CreateICmpNE(DiffScaled, SlowBuilder.getInt64(0));
 
-  if(Instruction *RangeChkCmp = dyn_cast<Instruction>(cmp)){
-    RangeChkCmp->setMetadata(F->getParent()->getMDKindID("scev_range_chk"), llvm::MDNode::get(F->getContext(), std::nullopt));
-  }
-
-  // control flow split location (before the target load/store)
-  Instruction *split = &*std::next(cast<Instruction>(cmp)->getIterator());
-  
-  LLVMContext* CC = &(F->getContext());
-
-  // if-then branch goes to error handling
-  Instruction *endOfThen = SplitBlockAndInsertIfThen(cmp, split, /*unreachable*/false, MDBuilder(*CC).createBranchWeights(1, 10000000), &DT, &LI, nullptr);
-  builder.SetInsertPoint(endOfThen);
-
-  // Slow check if tag is zero, then we must be dealing with uninstrumented pointers, ignore
-  Value *SlowCheckNonZeroTag = builder.CreateICmp(CmpInst::Predicate::ICMP_EQ, Tag, ConstantInt::get(Int64Ty, 0));
-
-  BasicBlock *Head = endOfThen->getParent(); // splitbefore BB
-  BasicBlock *Tail = BasicBlock::Create(*CC, "", F, Head->getNextNode());
-  new UnreachableInst(*CC, Tail);
-  // BasicBlock *Tail = Head->splitBasicBlock(endOfThen->getIterator());
-
-
-  // FIXME: update DTU for this block? 
-  if (Loop *L = LI.getLoopFor(Head)) {
-    L->addBasicBlockToLoop(Tail, LI);
-  }
-
-  Instruction *HeadOldTerm = Head->getTerminator();
-  // Instruction *CheckTerm = I.getParent()->getTerminator(); // Then
-  BranchInst *HeadNewTerm = BranchInst::Create(/*ifTrue*/ I.getParent(), /*ifFalse*/ Tail, SlowCheckNonZeroTag);
-  HeadNewTerm->setMetadata(LLVMContext::MD_prof, MDBuilder(*CC).createBranchWeights(1, 10000000));
-  ReplaceInstWithInst(HeadOldTerm, HeadNewTerm);
-  // CheckTerm == EndOfThen
-
-  // on Tail: Insert error
-  Instruction *NewFailureBlock = Tail->getTerminator();
-  builder.SetInsertPoint(NewFailureBlock);
-
-#if 0
-  // this call is optional if more informative error reports are desired
-  builder.CreateCall(swiftsan_report_fn, {Target, TargetFull, EndOfObj}, "swiftsan_report");
-#endif
-
+  Instruction *ErrorTerm = SplitBlockAndInsertIfThen(Failed, SlowTerm, false, nullptr, &DT, &LI, nullptr);
+  IRBuilder<> ErrorBuilder(ErrorTerm);
   if(isX86) {
-    // x86 software interrupt
     InlineAsm *IA = InlineAsm::get(
                     FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-                    StringRef("int3"),
-                    StringRef(""),
-                    /*hasSideEffects=*/ true,
-                    /*isAlignStack*/ false,
-                    InlineAsm::AD_ATT,
-                    /*canThrow*/ false);
-    builder.CreateCall(IA, {});
-  }
-  else {
-    // arm software breakpoint
+                    StringRef("int3"), StringRef(""),
+                    /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+                    InlineAsm::AD_ATT, /*canThrow*/ false);
+    ErrorBuilder.CreateCall(IA, {});
+  } else {
     InlineAsm *IA = InlineAsm::get(
                     FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-                    StringRef("brk #0x0"),
-                    StringRef(""),
-                    /*hasSideEffects=*/ true,
-                    /*isAlignStack*/ false,
-                    InlineAsm::AD_ATT,
-                    /*canThrow*/ false);
-    builder.CreateCall(IA, {});
+                    StringRef("brk #0x0"), StringRef(""),
+                    /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+                    InlineAsm::AD_ATT, /*canThrow*/ false);
+    ErrorBuilder.CreateCall(IA, {});
   }
 }
 
-std::tuple<Value *, Value *> SafeStack::InsertCheckMeta(Instruction &I, Value &addr, bool write, Type* ptrType, Value *EndOfObj, Value *Tag, bool slowZero) {
+#if 0
+std::tuple<Value *, Value *> SafeStack::InsertCheckMeta(Instruction &I, Value &addr, bool write, Type* ptrType, Value *EndOfObj) {
   Function *F = I.getParent()->getParent();
   Module *M = F->getParent();
   LLVMContext &C = F->getContext();
-  IRBuilder<> builder(C);
+  // Tag insertion point as needing a runtime check (SmartMixSan analysis marker)
+  I.setMetadata(M->getMDKindID("rsan_check"), llvm::MDNode::get(C, std::nullopt));
+  IRBuilder<> Builder(&I);
 
   IntegerType *IntPtrTy = DL.getIntPtrType(M->getContext());
-  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  IntegerType *Int64Ty = Type::getInt64Ty(C);
 
-  // insert check before the load/store
-  builder.SetInsertPoint(&I);
+  Value *Target = &addr;
+  Value *PtrVal = Builder.CreatePtrToInt(Target, Int64Ty, "ptr_val");
 
-  Value *Target = &addr; // target ptr
+  uint64_t tag_shift = isImplicitTagging ? 41 : 56;
 
-  Value* TargetFull = Target;
+  // Hot path: no AND — x86 hw masks shift count
+  Value *SizeTag = Builder.CreateLShr(PtrVal, Builder.getInt64(tag_shift));
 
-  // if ptrType == null, it means addr is already the full target (e.g. in meta re-use where it is known)
-  if(ptrType != nullptr){
-    // Get the access size of the memory operation
-    TypeSize size = DL.getTypeStoreSize(ptrType);
-    // if it concerns a larger than 1-byte access, we offset the address
-    if(size > 1) {
-      Value *AccessSize = ConstantInt::get(F->getContext(), APInt(IntPtrTy->getBitWidth(), size-1));
-      // Offset the to-be-checked address by the access size
-      std::vector<Value *> indizes = {AccessSize};
-      TargetFull = builder.CreateInBoundsGEP(builder.getInt8Ty(), Target, indizes);
-    }
+  Value *IsTagged = Builder.CreateICmpNE(SizeTag, Builder.getInt64(0));
+  Instruction *SlowTerm = SplitBlockAndInsertIfThen(IsTagged, &I, false, nullptr, &DT, &LI, nullptr);
+  IRBuilder<> SlowBuilder(SlowTerm);
+
+  // If no EndOfObj passed, load metadata and extract it
+  if (!EndOfObj) {
+    Value *ObjStart;
+    ObjStart = SlowBuilder.CreateLShr(PtrVal, SizeTag);
+    ObjStart = SlowBuilder.CreateShl(ObjStart, SizeTag, "obj_start");
+    Value *MetaPtrVal = SlowBuilder.CreateSub(ObjStart, SlowBuilder.getInt64(8));
+    Value *MetaPtr = SlowBuilder.CreateIntToPtr(MetaPtrVal, PointerType::get(C, 0));
+    LoadInst *Meta = SlowBuilder.CreateLoad(Int64Ty, MetaPtr, "meta");
+    Meta->setAlignment(Align(8));
+    EndOfObj = Meta;
+
   }
 
-  // compare target >= end_addr (unsigned greater or equal)
-  Value *cmp = builder.CreateICmp(CmpInst::Predicate::ICMP_UGE, TargetFull, EndOfObj);
-
-  if(Instruction *MetaChkCmp = dyn_cast<Instruction>(cmp)){
-    if(slowZero)
-      MetaChkCmp->setMetadata(F->getParent()->getMDKindID("meta_chk_slowzero"), llvm::MDNode::get(F->getContext(), std::nullopt));
+  // shr-43 zero-comparison: (EndOfObj - (PtrVal+n)) >> 43 != 0 -> error
+  uint64_t AccessSizeVal = 1;
+  if (ptrType) {
+    TypeSize sz = DL.getTypeStoreSize(ptrType);
+    if (!sz.isScalable()) AccessSizeVal = sz.getFixedValue();
   }
+  Value *TargetEnd = SlowBuilder.CreateAdd(PtrVal,
+      SlowBuilder.getInt64(AccessSizeVal));
+  Value *Diff = SlowBuilder.CreateSub(EndOfObj, TargetEnd, "chk_diff");
+  Value *DiffScaled = SlowBuilder.CreateLShr(Diff,
+      SlowBuilder.getInt64(MAX_SIZE_CLASS_SHIFT));
+  Value *Failed = SlowBuilder.CreateICmpNE(DiffScaled, SlowBuilder.getInt64(0));
 
-  // control flow split location (before the target load/store)
-  Instruction *split = &*std::next(cast<Instruction>(cmp)->getIterator());
-
-  LLVMContext* CC = &(F->getContext());
-
-  // if-then branch goes to error handling
-  Instruction *endOfThen = SplitBlockAndInsertIfThen(cmp, split, /*unreachable*/false, MDBuilder(*CC).createBranchWeights(1, 10000000), &DT, &LI, nullptr);
-  builder.SetInsertPoint(endOfThen);
-
-  // if the metadata was recovered from a stack object size, it is known (and Tag is nullptr)
-  // if it is reused from another load, it could be uninstrumented still and we have to slowcheck
-  if(Tag || slowZero){
-
-    if(slowZero){
-      // a special slow check case for reusing metadata where the tag is unknown and should be calculated from the ptr
-      // the pointer is known from the cached metadata, but the tag is not kept around
-      uint64_t tag_shift = 0;
-      if(isImplicitTagging)
-        tag_shift = 41;
-      else
-        tag_shift = 56; // TBI
-
-      // this sets up a load at the base-8
-      Value *PtrAsInt = builder.CreatePtrToInt(TargetFull, IntPtrTy);
-      // tag = ptr >> 56
-      Tag = builder.CreateLShr(PtrAsInt, ConstantInt::get(Int64Ty, tag_shift)); 
-    }
-
-    // Slow check if tag is zero, then we must be dealing with uninstrumented pointers, ignore
-    Value *SlowCheckNonZeroTag = builder.CreateICmp(CmpInst::Predicate::ICMP_EQ, Tag, ConstantInt::get(Int64Ty, 0));
-
-    BasicBlock *Head = endOfThen->getParent(); // splitbefore BB
-    BasicBlock *Tail = BasicBlock::Create(*CC, "", F, Head->getNextNode());
-    new UnreachableInst(*CC, Tail);
-    
-    if (Loop *L = LI.getLoopFor(Head)) {
-      L->addBasicBlockToLoop(Tail, LI);
-    }
-
-    Instruction *HeadOldTerm = Head->getTerminator();
-    // Instruction *CheckTerm = I.getParent()->getTerminator(); // Then
-    BranchInst *HeadNewTerm = BranchInst::Create(/*ifTrue*/ I.getParent(), /*ifFalse*/ Tail, SlowCheckNonZeroTag);
-    HeadNewTerm->setMetadata(LLVMContext::MD_prof, MDBuilder(*CC).createBranchWeights(1, 10000000));
-    ReplaceInstWithInst(HeadOldTerm, HeadNewTerm);
-    // CheckTerm == EndOfThen
-
-    // on Tail: Insert error
-    Instruction *NewFailureBlock = Tail->getTerminator();
-    builder.SetInsertPoint(NewFailureBlock);
-  }
-
-#if 0
-  // this call is optional if more informative error reports are desired
-  builder.CreateCall(swiftsan_report_fn, {Target, TargetFull, EndOfObj}, "swiftsan_report");
-#endif
-
+  Instruction *ErrorTerm = SplitBlockAndInsertIfThen(Failed, SlowTerm, false, nullptr, &DT, &LI, nullptr);
+  IRBuilder<> ErrorBuilder(ErrorTerm);
   if(isX86) {
-    // x86 software interrupt
     InlineAsm *IA = InlineAsm::get(
                     FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-                    StringRef("int3"),
-                    StringRef(""),
-                    /*hasSideEffects=*/ true,
-                    /*isAlignStack*/ false,
-                    InlineAsm::AD_ATT,
-                    /*canThrow*/ false);
-    builder.CreateCall(IA, {});
-  }
-  else {
-    // arm software breakpoint
+                    StringRef("int3"), StringRef(""),
+                    /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+                    InlineAsm::AD_ATT, /*canThrow*/ false);
+    ErrorBuilder.CreateCall(IA, {});
+  } else {
     InlineAsm *IA = InlineAsm::get(
                     FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-                    StringRef("brk #0x0"),
-                    StringRef(""),
-                    /*hasSideEffects=*/ true,
-                    /*isAlignStack*/ false,
-                    InlineAsm::AD_ATT,
-                    /*canThrow*/ false);
-    builder.CreateCall(IA, {});
+                    StringRef("brk #0x0"), StringRef(""),
+                    /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+                    InlineAsm::AD_ATT, /*canThrow*/ false);
+    ErrorBuilder.CreateCall(IA, {});
   }
-  return {EndOfObj, Tag};
+  return {EndOfObj, SizeTag};
 }
+#endif
 
 /// \param I The insertion point
 /// \param addr The pointer the load/store is accessing
 /// \param write is this a store operation
 /// \param ptrType Underlying type of the load/store access
+
 std::tuple<Value *, Value *> SafeStack::InsertCheck(Instruction &I, Value &addr, bool write, Type* ptrType) {
   Function *F = I.getParent()->getParent();
   Module *M = F->getParent();
   LLVMContext &C = F->getContext();
+  // Tag insertion point as needing a runtime check (SmartMixSan analysis marker)
+  I.setMetadata(M->getMDKindID("rsan_check"), llvm::MDNode::get(C, std::nullopt));
   IRBuilder<> builder(C);
 
   IntegerType *IntPtrTy = DL.getIntPtrType(M->getContext());
   IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
-  Type *Int64PtrTy = PointerType::get(Int64Ty, 0); 
+  Type *Int64PtrTy = PointerType::get(Int64Ty, 0);
 
-  // insert check before the load/store
   builder.SetInsertPoint(&I);
-  // Steps:
-  // tag = ptr >> 56
-  // end_of_slot = ((ptr >> tag)) << tag 
-  // metadata = end_of_slot-8
-  // end_addr = load(metadata)
-  // if ptr+access_size >= end_addr -> likely fault
-  // slow check: if tag == 0, skip (uninstrumented case)
 
-  // Try to get statically known unsafe stack allocation end address
-  // on the stack, we do not consider UAF so meta being zero is redundant
-  // there can be safe + unsafe accesses to unsafe stack objs.
-  // the proven safe accesses should have been filtered out, 
-  // but for non-constant offsets we do know the end of the object statically
-  Value *base = nullptr;
-  Constant *og_size = nullptr;
-  SmallPtrSet<Value *, 4> Visited;
+  Value *Target = &addr;
 
-  // DISABLE this: it does not work if you underflow on the stack object
-  // can only work if the addr is a gep with offset known to be positive
-  //AccumulateToUnsafeStackAlloca(&addr, Visited, &base, &og_size);
-  // bool bypass = base && og_size;
-
-  Value *Target = &addr; // target ptr
-
-  // the end address we compare against for validity
   Value *EndOfObj;
-  Value *Tag = nullptr;
 
-  if(base && og_size){ // bypass
-    Value *BaseAsInt = builder.CreatePtrToInt(base, IntPtrTy);
-    EndOfObj = builder.CreateIntToPtr(builder.CreateAdd(BaseAsInt, og_size), Int64PtrTy);
-    return InsertCheckMeta(I, addr, write, ptrType, EndOfObj, nullptr, false);
-  }
-  else{
-    uint64_t tag_shift = 0;
-    if(isImplicitTagging)
-      tag_shift = 41;
-    else
-      tag_shift = 56; // TBI
+  uint64_t tag_shift = isImplicitTagging ? 41 : 56;
 
-    // this sets up a load at the base-8
-    Value *PtrAsInt = builder.CreatePtrToInt(Target, IntPtrTy);
-    // tag = ptr >> 56
-    Tag = builder.CreateLShr(PtrAsInt, ConstantInt::get(Int64Ty, tag_shift)); 
+  Value *PtrAsInt = builder.CreatePtrToInt(Target, IntPtrTy);
+  // Hot path: no AND — x86 BMI2 masks shift count in hardware
+  Value *SizeTag = builder.CreateLShr(PtrAsInt, builder.getInt64(tag_shift));
 
-    Value *MetadataOffset;
-    if(isX86){ // BZHI
-      // mask = BZHI(ptr, tag)
-      Value *BZHImask = builder.CreateIntrinsic(Int64Ty, Intrinsic::x86_bmi_bzhi_64, {PtrAsInt, Tag});
-      // base = ptr XOR mask
-      Value *BZHIbase = builder.CreateXor(BZHImask, PtrAsInt);
-      // meta = base - 8
-      MetadataOffset = builder.CreateSub(BZHIbase, ConstantInt::get(Int64Ty, 8));
+  // obj_start = (ptr >> sc) << sc
+  Value *ObjStart;
+  ObjStart = builder.CreateLShr(PtrAsInt, SizeTag);
+  ObjStart = builder.CreateShl(ObjStart, SizeTag);
+  Value *MetadataOffset = builder.CreateSub(ObjStart, builder.getInt64(8));
 
-    }
-    else{ // ptr & (-1 << tag) (or: (ptr >> tag) << tag)
-      Value *TagMask = builder.CreateShl(ConstantInt::get(Int64Ty, -1), Tag);
-      PtrAsInt = builder.CreateAnd(PtrAsInt, TagMask);
-      MetadataOffset = builder.CreateSub(PtrAsInt, ConstantInt::get(Int64Ty, 8)); // meta = base-8
-    }
-    
-    // meta*
-    Value *MetadataPtr = builder.CreateIntToPtr(MetadataOffset, Int64PtrTy);
-    // end_of_obj = *meta;
-    EndOfObj = builder.CreateLoad(Int64PtrTy, MetadataPtr);
-  }
+  Value *MetadataPtr = builder.CreateIntToPtr(MetadataOffset, Int64PtrTy);
+  Value *Meta = builder.CreateLoad(Int64Ty, MetadataPtr);
 
-  // note that we did the metadata lookup on the original pointer (for underflows)
-  // and now we offset by the access size for the check
-  Value* TargetFull = Target;
+  EndOfObj = Meta;
 
-  // if ptrType == null, it means addr is already the full target (e.g. in meta re-use where it is known)
+  uint64_t AccessSizeVal = 1;
   if(ptrType != nullptr){
-    // Get the access size of the memory operation
     TypeSize size = DL.getTypeStoreSize(ptrType);
-    // if it concerns a larger than 1-byte access, we offset the address
-    if(size > 1) {
-      Value *AccessSize = ConstantInt::get(F->getContext(), APInt(IntPtrTy->getBitWidth(), size-1));
-      // Offset the to-be-checked address by the access size
-      std::vector<Value *> indizes = {AccessSize};
-      TargetFull = builder.CreateInBoundsGEP(builder.getInt8Ty(), Target, indizes);
-    }
+    if(!size.isScalable()) AccessSizeVal = size.getFixedValue();
   }
 
-  // compare target >= end_addr (unsigned greater or equal)
-  Value *cmp = builder.CreateICmp(CmpInst::Predicate::ICMP_UGE, TargetFull, EndOfObj);
+  // shr-43 zero-comparison: (Meta - (Ptr+n)) >> 43 != 0 -> error
+  Value *TargetEnd = builder.CreateAdd(PtrAsInt,
+      builder.getInt64(AccessSizeVal), "target_end");
+  Value *Diff = builder.CreateSub(Meta, TargetEnd, "check_diff");
+  Value *DiffScaled = builder.CreateLShr(Diff,
+      builder.getInt64(MAX_SIZE_CLASS_SHIFT));
+  Value *cmp = builder.CreateICmpNE(DiffScaled, builder.getInt64(0));
 
-  // control flow split location (before the target load/store)
   Instruction *split = &*std::next(cast<Instruction>(cmp)->getIterator());
-
   LLVMContext* CC = &(F->getContext());
-
-  // if-then branch goes to error handling
-  Instruction *endOfThen = SplitBlockAndInsertIfThen(cmp, split, /*unreachable*/false, MDBuilder(*CC).createBranchWeights(1, 10000000), &DT, &LI, nullptr);
+  Instruction *endOfThen = SplitBlockAndInsertIfThen(cmp, split, false, MDBuilder(*CC).createBranchWeights(1, 10000000), &DT, &LI, nullptr);
   builder.SetInsertPoint(endOfThen);
 
-  // TEMP: ~~~~~PROFILING IN swiftsan_report
-  // builder.CreateCall(swiftsan_report_fn, {Target, TargetFull, EndOfObj}, "swiftsan_report");
-  // arm software breakpoint
-  // InlineAsm *IA_temp = InlineAsm::get(
-	//       				   FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-	//       				   StringRef("brk #0x0"),
-	//       				   StringRef(""),
-	//       				   /*hasSideEffects=*/ true,
-	//       				   /*isAlignStack*/ false,
-	//       				   InlineAsm::AD_ATT,
-	//       				   /*canThrow*/ false);
-  // builder.CreateCall(IA_temp, {});
-  // ~~~~~~
-
-  // Slow check if tag is zero, then we must be dealing with uninstrumented pointers, ignore
-  Value *SlowCheckNonZeroTag = builder.CreateICmp(CmpInst::Predicate::ICMP_EQ, Tag, ConstantInt::get(Int64Ty, 0));
-
-  BasicBlock *Head = endOfThen->getParent(); // splitbefore BB
-
-  // BasicBlock *Tail = Head->splitBasicBlock(endOfThen->getIterator());
-
+  // Cold block: recompute Tag from Target. Tag!=0 because MixSan guarantees
+  // MemTag!=0 ⟹ SizeTag!=0; uninstrumented ptrs have SizeTag=MemTag=0.
+  Value *ColdPtrAsInt = builder.CreatePtrToInt(Target, IntPtrTy);
+  Value *ColdTag = builder.CreateLShr(ColdPtrAsInt, builder.getInt64(tag_shift));
+  Value *SlowCheckNonZeroTag = builder.CreateICmp(CmpInst::Predicate::ICMP_EQ, ColdTag, builder.getInt64(0));
+  BasicBlock *Head = endOfThen->getParent();
   BasicBlock *Tail = BasicBlock::Create(*CC, "", F, Head->getNextNode());
   new UnreachableInst(*CC, Tail);
-  
   if (Loop *L = LI.getLoopFor(Head)) {
     L->addBasicBlockToLoop(Tail, LI);
   }
-
   Instruction *HeadOldTerm = Head->getTerminator();
-  // Instruction *CheckTerm = I.getParent()->getTerminator(); // Then
-  BranchInst *HeadNewTerm = BranchInst::Create(/*ifTrue*/ I.getParent(), /*ifFalse*/ Tail, SlowCheckNonZeroTag);
+  BranchInst *HeadNewTerm = BranchInst::Create(I.getParent(), Tail, SlowCheckNonZeroTag);
   HeadNewTerm->setMetadata(LLVMContext::MD_prof, MDBuilder(*CC).createBranchWeights(1, 10000000));
   ReplaceInstWithInst(HeadOldTerm, HeadNewTerm);
-  // CheckTerm == EndOfThen
-
-  // on Tail: Insert error
   Instruction *NewFailureBlock = Tail->getTerminator();
   builder.SetInsertPoint(NewFailureBlock);
-
-#if 0
-  // this call is optional if more informative error reports are desired
-  builder.CreateCall(swiftsan_report_fn, {Target, TargetFull, EndOfObj}, "swiftsan_report");
-#endif
-
   if(isX86) {
-    // x86 software interrupt
     InlineAsm *IA = InlineAsm::get(
                     FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-                    StringRef("int3"),
-                    StringRef(""),
-                    /*hasSideEffects=*/ true,
-                    /*isAlignStack*/ false,
-                    InlineAsm::AD_ATT,
-                    /*canThrow*/ false);
+                    StringRef("int3"), StringRef(""),
+                    /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+                    InlineAsm::AD_ATT, /*canThrow*/ false);
     builder.CreateCall(IA, {});
   }
   else {
-    // arm software breakpoint
     InlineAsm *IA = InlineAsm::get(
                     FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
-                    StringRef("brk #0x0"),
-                    StringRef(""),
-                    /*hasSideEffects=*/ true,
-                    /*isAlignStack*/ false,
-                    InlineAsm::AD_ATT,
-                    /*canThrow*/ false);
+                    StringRef("brk #0x0"), StringRef(""),
+                    /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+                    InlineAsm::AD_ATT, /*canThrow*/ false);
     builder.CreateCall(IA, {});
   }
-  return {EndOfObj, Tag};
+  return {EndOfObj, SizeTag};
 }
+
 
 // isSafeAccess returns true if Addr is always inbounds with respect to its
 // base object. For example, it is a field access or an array access with
@@ -3217,8 +3014,8 @@ bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVe
     Value* CurPtr = Check.Ptr;
     TypeSize size = DL.getTypeStoreSize(Check.ptrType);
     IntegerType *IntPtrTy = DL.getIntPtrType(F.getParent()->getContext());
-    if(size > 1) {
-      Value *AccessSize = ConstantInt::get(F.getContext(), APInt(IntPtrTy->getBitWidth(), size-1));
+    if(!size.isScalable() && size.getFixedValue() > 1) {
+      Value *AccessSize = ConstantInt::get(F.getContext(), APInt(IntPtrTy->getBitWidth(), size.getFixedValue()-1));
       // Offset the to-be-checked address by the access size
       std::vector<Value *> indizes = {AccessSize};
       CurPtr = builder.CreateInBoundsGEP(builder.getInt8Ty(), Check.Ptr, indizes);
@@ -3255,7 +3052,7 @@ bool SafeStack::LoopPtrReuseMetadata(Function &F, LoopRangeCheck &Check, SmallVe
 bool SafeStack::PtrContainsCallUse(Value *Ptr, Loop *L){
 
   // if we can confirm Ptr is stack/global memory, then potential dealloc calls are not relevant
-  if (GlobalVariable *GV = dyn_cast<GlobalVariable>(getUnderlyingObject(Ptr))) {
+  if (isa<GlobalVariable>(getUnderlyingObject(Ptr))) {
     return false;
   }
   if (isa<AllocaInst>(getUnderlyingObject(Ptr))) {
@@ -3908,6 +3705,7 @@ void SafeStack::BlockSharingOptimization(Function &F, SmallVector<InterestingMem
 }
 
 
+#if 0
 void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<InterestingMemoryOperand, 16> &OperandsToInstrument, SmallVector<CheckMergeCands, 16> &MetaReuse, AliasAnalysis *AA, ScalarEvolution *SE) {
   
   // we can re-use metadata for accesses on the same base with a larger offset
@@ -4025,6 +3823,7 @@ void SafeStack::FindFunctionMetaSharingCandidates(Function &F, SmallVector<Inter
   }
 
 }
+#endif
 
 bool GEPOffsetIsPositive(GetElementPtrInst *GEP, ScalarEvolution *SE){
   for (auto &Op : GEP->indices()) {
@@ -4394,6 +4193,7 @@ void SafeStack::FindBlockCheckSharingCandidates(Function &F, SmallVector<Interes
   }
 }
 
+#if 0
 void SafeStack::MetadataSharingOptimization(Function &F, SmallVector<InterestingMemoryOperand, 16> &OperandsToInstrument, SmallVector<CheckMergeCands, 16> &FuncMetaMergers, AliasAnalysis *AA, ScalarEvolution *SE) {
 
   // TODO: if the target already has a check, but there are candidates that do not
@@ -4426,7 +4226,7 @@ void SafeStack::MetadataSharingOptimization(Function &F, SmallVector<Interesting
 
       for(InterestingMemoryOperand covered : share.ContainedOps){
         if(isOperInVector(covered, OperandsToInstrument)){
-          InsertCheckMeta(*covered.getInsn(), *covered.getPtr(), true, covered.OpType, std::get<0>(EndNTag), std::get<1>(EndNTag), false);
+          InsertCheckMeta(*covered.getInsn(), *covered.getPtr(), true, covered.OpType, std::get<0>(EndNTag));
           optimized.insert(covered.getInsn());
         }
       }
@@ -4444,6 +4244,7 @@ void SafeStack::MetadataSharingOptimization(Function &F, SmallVector<Interesting
 	}
 
 }
+#endif
 
 void SafeStack::getInterestingMemoryOperands(Instruction &I, SmallVectorImpl<InterestingMemoryOperand> &Interesting) {
 
@@ -4602,6 +4403,7 @@ void SafeStack::InstrumentCalls(Function &F) {
       CallInst *replacedCall = builder.CreateCall(replacement, args);
       assert(replacedCall);
       replacedCall->setMetadata(F.getParent()->getMDKindID("swiftsan"), llvm::MDNode::get(F.getContext(), std::nullopt));
+      replacedCall->setMetadata(F.getParent()->getMDKindID("rsan_check"), llvm::MDNode::get(F.getContext(), std::nullopt));
       CI->replaceAllUsesWith(replacedCall);
       CI->eraseFromParent();
     }
@@ -4652,11 +4454,13 @@ void SafeStack::InstrumentCalls(Function &F) {
         targetCall = isa<MemMoveInst>(MI) ? SwiftsanMemmove : SwiftsanMemcpy;
       }
 
-      IRB.CreateCall(
+      Instruction *ReplacedCall = IRB.CreateCall(
           targetCall,
           {IRB.CreatePointerCast(MI->getOperand(0), IRB.getInt8PtrTy()),
            IRB.CreatePointerCast(MI->getOperand(1), IRB.getInt8PtrTy()),
            IRB.CreateIntCast(MI->getOperand(2), IntPtrTy, false)});
+      ReplacedCall->setMetadata(F.getParent()->getMDKindID("rsan_check"),
+                                 llvm::MDNode::get(F.getContext(), std::nullopt));
 
     } else if (isa<MemSetInst>(MI)) {
 
@@ -4670,11 +4474,13 @@ void SafeStack::InstrumentCalls(Function &F) {
         }
       }
 
-      IRB.CreateCall(
+      Instruction *ReplacedMemset = IRB.CreateCall(
           SwiftsanMemset,
           {IRB.CreatePointerCast(MI->getOperand(0), IRB.getInt8PtrTy()),
            IRB.CreateIntCast(MI->getOperand(1), IRB.getInt32Ty(), false),
            IRB.CreateIntCast(MI->getOperand(2), IntPtrTy, false)});
+      ReplacedMemset->setMetadata(F.getParent()->getMDKindID("rsan_check"),
+                                   llvm::MDNode::get(F.getContext(), std::nullopt));
     } else {
       llvm_unreachable("Neither MemSet nor MemTransfer?");
     }
@@ -5435,15 +5241,28 @@ public:
     fclose(fp);
 #endif
 
+    // Dump post-instrumentation IR
+    if (const char *dumpPath = std::getenv("RSAN_DUMP_IR")) {
+      std::string dumpFile;
+      if (dumpPath[0] == '1' && dumpPath[1] == '\0') {
+        dumpFile = M.getSourceFileName() + ".safe.ll";
+      } else {
+        dumpFile = dumpPath;
+      }
+      std::error_code ec;
+      llvm::raw_fd_ostream OS(dumpFile, ec);
+      if (!ec) {
+        M.print(OS, nullptr);
+        errs() << "[SafeStack] dumped IR to " << dumpFile << "\n";
+      } else {
+        errs() << "[SafeStack] failed to dump IR: " << ec.message() << "\n";
+      }
+    }
+
     Changed |= RT.finalize();
 
     GlobalRedzones GR;
     GR.runOnModule(M);
-
-#if DUMP_IR == 1
-    llvm::raw_fd_ostream OS2(/*currentDateTime() +*/ modname + "-post.txt", ec);
-    M.print(OS2, nullptr);
-#endif
 
     return Changed;
   }
