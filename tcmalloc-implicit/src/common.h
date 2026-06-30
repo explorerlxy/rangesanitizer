@@ -99,16 +99,19 @@ we use bits 41-47 to represent the implicit tag */
 	// SizeTag via (x >> 41) & 0xFFFF — avoids 64-bit movabs for ~MEMTAG_BITS
 	#define PTR_GET_TAG(x)          (((uintptr_t)(x) >> BB_TAG_SHIFT) & 0xFFFF)
 
-	/* Temporal check threshold: |meta - ptr| > (1<<56) indicates MemTag mismatch */
-	#define MEMTAG_THRESHOLD  (1ULL << 56)
+	/* Temporal check threshold: |meta - ptr| > (1<<43) indicates OOB or MemTag mismatch */
+	#define MEMTAG_THRESHOLD_SHIFT  43
 
 	/* Derive MemTag from TSC (no memory access, pure register operation) */
 	#define MEMTAG_FROM_TSC()  ((uint8_t)(__builtin_ia32_rdtsc() & 0x3F))
 
-	/* Unified temporal+spatial check: meta-(target+n) > (THRESHOLD-n) → error.
-	   Underflow (spatial) → huge diff > limit.  MemTag mismatch → diff > limit. */
+	/* Unified temporal+spatial check: (meta-(target+n)) >> 43 != 0 → error.
+	   In-bounds: diff is small positive (remaining space ≤ object size) → shift zero → pass.
+	   OOB (spatial): diff wraps to huge unsigned → shift non-zero → error.
+	   UAF/double-free (temporal): meta zeroed → 0 - ptr wraps → shift non-zero → error.
+	   MemTag mismatch: tag bits shift ptr value → diff wraps → error. */
 	#define MEMTAG_CHECK(meta, target, n) \
-	  ((meta) - ((uint64_t)(target) + (n)) > (MEMTAG_THRESHOLD - (n)))
+	  (((meta) - ((uint64_t)(target) + (n))) >> MEMTAG_THRESHOLD_SHIFT != 0)
 
 	
 #else
