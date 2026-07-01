@@ -424,6 +424,10 @@ static cl::opt<bool> ClColoring("safe-stack-coloring",
                                 cl::desc("enable safe stack coloring"),
                                 cl::Hidden, cl::init(false));
 
+static cl::opt<bool> ClNaiveThreeStage("mixsan-naive-check",
+    cl::desc("Use naive 3-stage check (SizeTag gate, MemTag compare, bound compare) for baseline comparison"),
+    cl::Hidden, cl::init(false));
+
 namespace {
 
 /// Rewrite an SCEV expression for a memory access address to an expression that
@@ -1076,10 +1080,12 @@ class SafeStack {
   // Checks
   bool ChecksOnFunc(Function &F, ObjectSizeOffsetVisitor &ObjSizeVis);
   std::tuple<Value *, Value *> InsertCheck(Instruction &I, Value &addr, bool write, Type* ptrType);
+  std::tuple<Value *, Value *> InsertCheckNaive(Instruction &I, Value &addr, bool write, Type* ptrType);
 #if 0
   std::tuple<Value *, Value *> InsertCheckMeta(Instruction &I, Value &addr, bool write, Type* ptrType, Value *EndOfObj);
 #endif
   void InsertCheckRange(Instruction &I, Value *start, Value *end, Type* ptrType);
+  void InsertCheckRangeNaive(Instruction &I, Value *start, Value *end, Type* ptrType);
   void AccumulateToUnsafeStackAlloca(Value *V, SmallPtrSetImpl<Value*> &Visited, Value **found, Constant **og_size);
   Constant* getUnsafeStackObjOgSize(Value *V);
 
@@ -1993,6 +1999,10 @@ void SafeStack::AccumulateToUnsafeStackAlloca(Value *V, SmallPtrSetImpl<Value*> 
 }
 
 void SafeStack::InsertCheckRange(Instruction &I, Value *start, Value *end, Type* ptrType) {
+  if (ClNaiveThreeStage && isImplicitTagging) {
+    InsertCheckRangeNaive(I, start, end, ptrType);
+    return;
+  }
 
   Function *F = I.getParent()->getParent();
   Module *M = F->getParent();
@@ -2052,6 +2062,167 @@ void SafeStack::InsertCheckRange(Instruction &I, Value *start, Value *end, Type*
                     StringRef("brk #0x0"), StringRef(""),
                     /*hasSideEffects=*/ true, /*isAlignStack*/ false,
                     InlineAsm::AD_ATT, /*canThrow*/ false);
+    ErrorBuilder.CreateCall(IA, {});
+  }
+}
+
+//==============================================================================
+// Naive 3-stage check (baseline for comparison with unified shr-43 check)
+// Stage 1: SizeTag != 0 gate — skip uninstrumented pointers
+// Stage 2: MemTag comparison — extract and compare 6-bit tags from ptr vs meta
+// Stage 3: Boundary check — (Ptr+n) > Meta (upper bits equal after tag match)
+//==============================================================================
+std::tuple<Value *, Value *> SafeStack::InsertCheckNaive(Instruction &I, Value &addr, bool write, Type* ptrType) {
+  Function *F = I.getParent()->getParent();
+  Module *M = F->getParent();
+  LLVMContext &C = F->getContext();
+  I.setMetadata(M->getMDKindID("rsan_check"), llvm::MDNode::get(C, std::nullopt));
+  IRBuilder<> builder(C);
+
+  IntegerType *IntPtrTy = DL.getIntPtrType(M->getContext());
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  Type *Int64PtrTy = PointerType::get(Int64Ty, 0);
+
+  builder.SetInsertPoint(&I);
+  Value *Target = &addr;
+
+  uint64_t tag_shift = isImplicitTagging ? 41 : 56;
+  Value *PtrAsInt = builder.CreatePtrToInt(Target, IntPtrTy);
+
+  // Stage 1: SizeTag != 0 gate
+  Value *SizeTag = builder.CreateLShr(PtrAsInt, builder.getInt64(tag_shift), "sc");
+  Value *IsTagged = builder.CreateICmpNE(SizeTag, builder.getInt64(0), "is_tagged");
+
+  Instruction *Stage1Term = SplitBlockAndInsertIfThen(
+      IsTagged, &I, false,
+      MDBuilder(C).createBranchWeights(10000000, 1), &DT, &LI, nullptr);
+  IRBuilder<> SlowBuilder(Stage1Term);
+
+  // Object start and metadata load
+  Value *ObjStart = SlowBuilder.CreateLShr(PtrAsInt, SizeTag);
+  ObjStart = SlowBuilder.CreateShl(ObjStart, SizeTag, "obj_start");
+  Value *MetadataOffset = SlowBuilder.CreateSub(ObjStart, SlowBuilder.getInt64(8));
+  Value *MetadataPtr = SlowBuilder.CreateIntToPtr(MetadataOffset, Int64PtrTy);
+  LoadInst *Meta = SlowBuilder.CreateLoad(Int64Ty, MetadataPtr, "meta");
+  Meta->setAlignment(Align(8));
+
+  // Stage 2: MemTag comparison (bits 62--57)
+  uint64_t memtag_shift = IMPLICIT_MEMTAG_SHIFT; // 57 on x86_64 LAM U57
+  Value *MemTagShiftVal = SlowBuilder.getInt64(memtag_shift);
+  Value *MemTagMaskVal = SlowBuilder.getInt64(0x3F);
+  Value *PtrMemTag = SlowBuilder.CreateLShr(PtrAsInt, MemTagShiftVal);
+  PtrMemTag = SlowBuilder.CreateAnd(PtrMemTag, MemTagMaskVal, "ptr_memtag");
+  Value *MetaMemTag = SlowBuilder.CreateLShr(Meta, MemTagShiftVal);
+  MetaMemTag = SlowBuilder.CreateAnd(MetaMemTag, MemTagMaskVal, "meta_memtag");
+  Value *TagMismatch = SlowBuilder.CreateICmpNE(PtrMemTag, MetaMemTag, "tag_mismatch");
+
+  // Stage 3: Boundary check — (Ptr + n) > Meta
+  uint64_t AccessSizeVal = 1;
+  if (ptrType != nullptr) {
+    TypeSize size = DL.getTypeStoreSize(ptrType);
+    if (!size.isScalable()) AccessSizeVal = size.getFixedValue();
+  }
+  Value *TargetEnd = SlowBuilder.CreateAdd(PtrAsInt,
+      SlowBuilder.getInt64(AccessSizeVal), "target_end");
+  Value *OOB = SlowBuilder.CreateICmpUGT(TargetEnd, Meta, "oob");
+
+  // Error if tag mismatch (Stage 2) OR out-of-bounds (Stage 3)
+  Value *Failed = SlowBuilder.CreateOr(TagMismatch, OOB, "failed");
+
+  Instruction *split = &*std::next(cast<Instruction>(Failed)->getIterator());
+  LLVMContext* CC = &(F->getContext());
+  Instruction *endOfThen = SplitBlockAndInsertIfThen(
+      Failed, split, false,
+      MDBuilder(*CC).createBranchWeights(1, 10000000), &DT, &LI, nullptr);
+  builder.SetInsertPoint(endOfThen);
+
+  if (isX86) {
+    InlineAsm *IA = InlineAsm::get(
+        FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
+        StringRef("int3"), StringRef(""),
+        /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+        InlineAsm::AD_ATT, /*canThrow*/ false);
+    builder.CreateCall(IA, {});
+  } else {
+    InlineAsm *IA = InlineAsm::get(
+        FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
+        StringRef("brk #0x0"), StringRef(""),
+        /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+        InlineAsm::AD_ATT, /*canThrow*/ false);
+    builder.CreateCall(IA, {});
+  }
+
+  return {Meta, SizeTag};
+}
+
+void SafeStack::InsertCheckRangeNaive(Instruction &I, Value *start, Value *end, Type* ptrType) {
+  Function *F = I.getParent()->getParent();
+  Module *M = F->getParent();
+  LLVMContext &C = F->getContext();
+  I.setMetadata(M->getMDKindID("rsan_check"), llvm::MDNode::get(C, std::nullopt));
+  IRBuilder<> Builder(&I);
+
+  IntegerType *Int64Ty = Type::getInt64Ty(C);
+
+  uint64_t tag_shift = isImplicitTagging ? 41 : 56;
+
+  Value *StartVal = Builder.CreatePtrToInt(start, Int64Ty, "start_val");
+  Value *EndPtrVal = Builder.CreatePtrToInt(end, Int64Ty, "end_val");
+
+  // Stage 1: SizeTag != 0 gate
+  Value *SizeTag = Builder.CreateLShr(StartVal, Builder.getInt64(tag_shift), "sc");
+  Value *IsTagged = Builder.CreateICmpNE(SizeTag, Builder.getInt64(0));
+
+  Instruction *Stage1Term = SplitBlockAndInsertIfThen(
+      IsTagged, &I, false, nullptr, &DT, &LI, nullptr);
+  IRBuilder<> SlowBuilder(Stage1Term);
+
+  Value *ObjStart = SlowBuilder.CreateLShr(StartVal, SizeTag);
+  ObjStart = SlowBuilder.CreateShl(ObjStart, SizeTag, "obj_start");
+  Value *MetaPtrVal = SlowBuilder.CreateSub(ObjStart, SlowBuilder.getInt64(8), "meta_ptr_val");
+  Value *MetaPtr = SlowBuilder.CreateIntToPtr(MetaPtrVal, PointerType::get(C, 0), "meta_ptr");
+  LoadInst *Meta = SlowBuilder.CreateLoad(Int64Ty, MetaPtr, "meta");
+  Meta->setAlignment(Align(8));
+
+  // Stage 2: MemTag comparison
+  uint64_t memtag_shift = IMPLICIT_MEMTAG_SHIFT;
+  Value *MemTagShiftVal = SlowBuilder.getInt64(memtag_shift);
+  Value *MemTagMaskVal = SlowBuilder.getInt64(0x3F);
+  Value *PtrMemTag = SlowBuilder.CreateLShr(StartVal, MemTagShiftVal);
+  PtrMemTag = SlowBuilder.CreateAnd(PtrMemTag, MemTagMaskVal, "ptr_memtag");
+  Value *MetaMemTag = SlowBuilder.CreateLShr(Meta, MemTagShiftVal);
+  MetaMemTag = SlowBuilder.CreateAnd(MetaMemTag, MemTagMaskVal, "meta_memtag");
+  Value *TagMismatch = SlowBuilder.CreateICmpNE(PtrMemTag, MetaMemTag, "tag_mismatch");
+
+  // Stage 3: Boundary check — (end + n) > Meta
+  uint64_t AccessSizeVal = 1;
+  if (ptrType != nullptr) {
+    TypeSize size = DL.getTypeStoreSize(ptrType);
+    if (!size.isScalable()) AccessSizeVal = size.getFixedValue();
+  }
+  EndPtrVal = SlowBuilder.CreateAdd(EndPtrVal,
+      SlowBuilder.getInt64(AccessSizeVal), "target_end");
+  Value *OOB = SlowBuilder.CreateICmpUGT(EndPtrVal, Meta, "oob");
+
+  Value *Failed = SlowBuilder.CreateOr(TagMismatch, OOB, "failed");
+
+  Instruction *ErrorTerm = SplitBlockAndInsertIfThen(
+      Failed, Stage1Term, false, nullptr, &DT, &LI, nullptr);
+  IRBuilder<> ErrorBuilder(ErrorTerm);
+
+  if (isX86) {
+    InlineAsm *IA = InlineAsm::get(
+        FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
+        StringRef("int3"), StringRef(""),
+        /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+        InlineAsm::AD_ATT, /*canThrow*/ false);
+    ErrorBuilder.CreateCall(IA, {});
+  } else {
+    InlineAsm *IA = InlineAsm::get(
+        FunctionType::get(llvm::Type::getVoidTy(C), {}, false),
+        StringRef("brk #0x0"), StringRef(""),
+        /*hasSideEffects=*/ true, /*isAlignStack*/ false,
+        InlineAsm::AD_ATT, /*canThrow*/ false);
     ErrorBuilder.CreateCall(IA, {});
   }
 }
@@ -2133,6 +2304,9 @@ std::tuple<Value *, Value *> SafeStack::InsertCheckMeta(Instruction &I, Value &a
 /// \param ptrType Underlying type of the load/store access
 
 std::tuple<Value *, Value *> SafeStack::InsertCheck(Instruction &I, Value &addr, bool write, Type* ptrType) {
+  if (ClNaiveThreeStage && isImplicitTagging)
+    return InsertCheckNaive(I, addr, write, ptrType);
+
   Function *F = I.getParent()->getParent();
   Module *M = F->getParent();
   LLVMContext &C = F->getContext();
@@ -4883,12 +5057,18 @@ bool SizedStackRuntime::finalize() {
   stackPointerArray->eraseFromParent();
   stackPointerArray = nullptr;
 
+  // If no sized stacks were allocated, there is no need to patch up
+  // the static library symbols — they won't reference any stack pointers.
+  if (typeIndexNext == 0)
+    return true;
+
   // Replace static library stack pointer array with the newly allocated one.
   GlobalVariable *stackPointerArrayStatic = dyn_cast_or_null<GlobalVariable>(M.getNamedValue(kUnsafeStackPtrVar));
 
-  assert(stackPointerArrayStatic);
-  replaceUsesWithCast(stackPointerArrayStatic, stackPointerArrayFinal);
-  stackPointerArrayStatic->eraseFromParent();
+  if (stackPointerArrayStatic) {
+    replaceUsesWithCast(stackPointerArrayStatic, stackPointerArrayFinal);
+    stackPointerArrayStatic->eraseFromParent();
+  }
 
   // Replace static library size class array with a properly sized and initialized one.
   // The array might not exist; it gets optimized out when DISABLE_SLOWPATH is
@@ -4901,7 +5081,8 @@ bool SizedStackRuntime::finalize() {
   }
 
   // Provide stack pointer count and assigned size classes to static library.
-  createStackPtrCount(kUnsafeStackPtrCountVar, typeIndexNext);
+  if (M.getNamedValue(kUnsafeStackPtrCountVar))
+    createStackPtrCount(kUnsafeStackPtrCountVar, typeIndexNext);
 
 
 

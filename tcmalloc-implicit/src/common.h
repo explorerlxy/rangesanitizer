@@ -105,13 +105,40 @@ we use bits 41-47 to represent the implicit tag */
 	/* Derive MemTag from TSC (no memory access, pure register operation) */
 	#define MEMTAG_FROM_TSC()  ((uint8_t)(__builtin_ia32_rdtsc() & 0x3F))
 
-	/* Unified temporal+spatial check: (meta-(target+n)) >> 43 != 0 → error.
-	   In-bounds: diff is small positive (remaining space ≤ object size) → shift zero → pass.
-	   OOB (spatial): diff wraps to huge unsigned → shift non-zero → error.
-	   UAF/double-free (temporal): meta zeroed → 0 - ptr wraps → shift non-zero → error.
-	   MemTag mismatch: tag bits shift ptr value → diff wraps → error. */
-	#define MEMTAG_CHECK(meta, target, n) \
-	  (((meta) - ((uint64_t)(target) + (n))) >> MEMTAG_THRESHOLD_SHIFT != 0)
+	/* Toggle between unified (default) and naive 3-stage MEMTAG_CHECK.
+	   Naive version used as baseline to highlight unified check advantage. */
+	#ifndef ENABLE_MEMTAG_NAIVE
+	#define ENABLE_MEMTAG_NAIVE 0
+	#endif
+
+	#if ENABLE_MEMTAG_NAIVE
+		/* Naive 3-stage check (baseline for comparison with unified check):
+		   Stage 1: SizeTag != 0 gate — uninstrumented ptrs (sc==0) skip check
+		   Stage 2: MemTag comparison — extract 6-bit tags from ptr vs meta
+		   Stage 3: Boundary check — (target + n) > meta */
+		static inline __attribute__((always_inline))
+		int memtag_check_naive(uint64_t meta, void* target, size_t n) {
+			uint64_t t = (uint64_t)target;
+			// Stage 1: SizeTag != 0 gate
+			if (((t >> BB_TAG_SHIFT) & 0xFFFF) == 0) return 0;
+			// Stage 2: MemTag comparison
+			uint64_t ptr_tag = (t >> MEMTAG_SHIFT) & 0x3F;
+			uint64_t meta_tag = (meta >> MEMTAG_SHIFT) & 0x3F;
+			if (ptr_tag != meta_tag) return 1;
+			// Stage 3: Boundary check (upper bits equal after tag match)
+			if (t + n > meta) return 1;
+			return 0;
+		}
+		#define MEMTAG_CHECK(meta, target, n) memtag_check_naive(meta, target, n)
+	#else
+		/* Unified temporal+spatial check: (meta-(target+n)) >> 43 != 0 → error.
+		   In-bounds: diff is small positive (remaining space ≤ object size) → shift zero → pass.
+		   OOB (spatial): diff wraps to huge unsigned → shift non-zero → error.
+		   UAF/double-free (temporal): meta zeroed → 0 - ptr wraps → shift non-zero → error.
+		   MemTag mismatch: tag bits shift ptr value → diff wraps → error. */
+		#define MEMTAG_CHECK(meta, target, n) \
+		  (((meta) - ((uint64_t)(target) + (n))) >> MEMTAG_THRESHOLD_SHIFT != 0)
+	#endif
 
 	
 #else
