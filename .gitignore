@@ -1,0 +1,11 @@
+env.local.sh
+llvm-build/
+tcmalloc-impl-build/
+tcmalloc-baseline-build/
+tcmalloc-expl-build/
+build/
+__pycache__/
+*.pyc
+*.o
+*.a
+*.log

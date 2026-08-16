@@ -426,7 +426,7 @@ static cl::opt<bool> ClColoring("safe-stack-coloring",
 
 static cl::opt<bool> ClNaiveThreeStage("mixsan-naive-check",
     cl::desc("Use naive 3-stage check (SizeTag gate, MemTag compare, bound compare) for baseline comparison"),
-    cl::Hidden, cl::init(false));
+    cl::Hidden, cl::init(true));
 
 namespace {
 

@@ -84,17 +84,17 @@ class RSanOrig(infra.Instance):
         ctx.ldflags += STD_LDFLAGS + get_tcmalloc_ldflags(TC_IMPL) + RSAN_LDFLAGS + _impl_ldflags(LNK_ORIG, DL_ORIG)
 
 class MixSan(infra.Instance):
-    """SmartMixSan-LAM: hybrid sanitizer under development.
-       Uses main-dir builds (RSAN_TOP)."""
+    """MixSan (Naive): three-stage check. Uses this tree's MixSan builds."""
     name = 'mixsan'
     def __init__(self, opt_level):
         self.name += "_" + opt_level
         self.opt = ["-" + opt_level]
     def configure(self, ctx):
+        naive = ["-mllvm", "-mixsan-naive-check"]
         ctx.cc = CC_MIX
         ctx.cxx = CXX_MIX
-        ctx.cflags += self.opt + STD_CFLAGS + RSAN_CFLAGS + _impl_cflags(LNK_MIX, DL_MIX)
-        ctx.cxxflags += self.opt + STD_CFLAGS + RSAN_CFLAGS + _impl_cflags(LNK_MIX, DL_MIX)
+        ctx.cflags += self.opt + STD_CFLAGS + RSAN_CFLAGS + naive + _impl_cflags(LNK_MIX, DL_MIX)
+        ctx.cxxflags += self.opt + STD_CFLAGS + RSAN_CFLAGS + naive + _impl_cflags(LNK_MIX, DL_MIX)
         ctx.ldflags += STD_LDFLAGS + get_tcmalloc_ldflags(TC_MIX) + RSAN_LDFLAGS + _impl_ldflags(LNK_MIX, DL_MIX)
 
 class MixSanCompilerRSanTC(infra.Instance):

@@ -1,31 +1,62 @@
 # Execute this script with: `source env.sh`
+# Do not run it as `./env.sh`.
 
-# Change Me! depending on where you cloned the RSan repo
-export RSAN_TOP=/home/ubuntu/floris/rangesanitizer
+_RSAN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Change Me! depending on where you installed SPEC CPU2006
-export RSAN_SPEC2006=/home/ubuntu/floris/rangesanitizer/spec2006
+# MixSan (Naive) tree (this clone)
+export RSAN_TOP="${RSAN_TOP:-$_RSAN_ROOT}"
 
-# LLVM/Clang
-export RSAN_LLVM=$RSAN_TOP/llvm-project-16/llvm
-export RSAN_LLVM_BUILD=$RSAN_TOP/llvm-build
-export RSAN_C=$RSAN_LLVM_BUILD/bin/clang
-export RSAN_CXX=$RSAN_LLVM_BUILD/bin/clang++
+# Original RSan tree, required only for rsan-orig_* / baseline_* in setup.py.
+if [ -z "${RSAN_ORIG:-}" ]; then
+  if [ -d "$_RSAN_ROOT/../rangesanitizer-original" ]; then
+    export RSAN_ORIG="$(cd "$_RSAN_ROOT/../rangesanitizer-original" && pwd)"
+  fi
+fi
 
-# TCMalloc
-export RSAN_TC_BASE=$RSAN_TOP/tcmalloc-baseline
-export RSAN_TC_BASE_BUILD=$RSAN_TOP/tcmalloc-baseline-build
-export RSAN_TC_IMPL=$RSAN_TOP/tcmalloc-implicit
-export RSAN_TC_IMPL_BUILD=$RSAN_TOP/tcmalloc-impl-build
-export RSAN_TC_EXPL=$RSAN_TOP/tcmalloc-explicit
-export RSAN_TC_EXPL_BUILD=$RSAN_TOP/tcmalloc-expl-build
+# SPEC CPU2006 install (required for the spec2006 target)
+# export RSAN_SPEC2006=/path/to/cpu2006
 
-# Implicit tagging linking
-export RSAN_LINKER_SCRIPT=$RSAN_TOP/linker-implicit/globals/linkglobals.ld
-export RSAN_DYNAMIC_LINKER=$RSAN_TOP/linker-implicit/libdl/pld.so
+if [ -f "$_RSAN_ROOT/env.local.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$_RSAN_ROOT/env.local.sh"
+fi
 
-# Infra
+export RSAN_MIX_LLVM=$RSAN_TOP/llvm-project-16/llvm
+export RSAN_MIX_LLVM_BUILD=$RSAN_TOP/llvm-build
+export RSAN_MIX_C=$RSAN_MIX_LLVM_BUILD/bin/clang
+export RSAN_MIX_CXX=$RSAN_MIX_LLVM_BUILD/bin/clang++
+export RSAN_MIX_TC_IMPL=$RSAN_TOP/tcmalloc-implicit
+export RSAN_MIX_TC_IMPL_BUILD=$RSAN_TOP/tcmalloc-impl-build
+export RSAN_MIX_LINKER_SCRIPT=$RSAN_TOP/linker-implicit/globals/linkglobals.ld
+export RSAN_MIX_DYNAMIC_LINKER=$RSAN_TOP/linker-implicit/libdl/pld.so
+
+if [ -n "${RSAN_ORIG:-}" ]; then
+  export RSAN_ORIG_LLVM=$RSAN_ORIG/llvm-project-16/llvm
+  export RSAN_ORIG_LLVM_BUILD=$RSAN_ORIG/llvm-build
+  export RSAN_ORIG_C=$RSAN_ORIG_LLVM_BUILD/bin/clang
+  export RSAN_ORIG_CXX=$RSAN_ORIG_LLVM_BUILD/bin/clang++
+  export RSAN_ORIG_TC_BASE=$RSAN_ORIG/tcmalloc-baseline
+  export RSAN_ORIG_TC_BASE_BUILD=$RSAN_ORIG/tcmalloc-baseline-build
+  export RSAN_ORIG_TC_IMPL=$RSAN_ORIG/tcmalloc-implicit
+  export RSAN_ORIG_TC_IMPL_BUILD=$RSAN_ORIG/tcmalloc-impl-build
+  export RSAN_ORIG_TC_EXPL=$RSAN_ORIG/tcmalloc-explicit
+  export RSAN_ORIG_TC_EXPL_BUILD=$RSAN_ORIG/tcmalloc-expl-build
+  export RSAN_ORIG_LINKER_SCRIPT=$RSAN_ORIG/linker-implicit/globals/linkglobals.ld
+  export RSAN_ORIG_DYNAMIC_LINKER=$RSAN_ORIG/linker-implicit/libdl/pld.so
+fi
+
+export RSAN_LLVM=$RSAN_MIX_LLVM
+export RSAN_LLVM_BUILD=$RSAN_MIX_LLVM_BUILD
+export RSAN_C=$RSAN_MIX_C
+export RSAN_CXX=$RSAN_MIX_CXX
+export RSAN_TC_IMPL=$RSAN_MIX_TC_IMPL
+export RSAN_TC_IMPL_BUILD=$RSAN_MIX_TC_IMPL_BUILD
+export RSAN_LINKER_SCRIPT=$RSAN_MIX_LINKER_SCRIPT
+export RSAN_DYNAMIC_LINKER=$RSAN_MIX_DYNAMIC_LINKER
 export RSAN_INFRA=$RSAN_TOP/infra
-
-# Suggested for stable benchmarking (sudo)
-# echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+if [ -n "${RSAN_ORIG:-}" ]; then
+  export RSAN_TC_BASE=$RSAN_ORIG_TC_BASE
+  export RSAN_TC_BASE_BUILD=$RSAN_ORIG_TC_BASE_BUILD
+  export RSAN_TC_EXPL=$RSAN_ORIG_TC_EXPL
+  export RSAN_TC_EXPL_BUILD=$RSAN_ORIG_TC_EXPL_BUILD
+fi

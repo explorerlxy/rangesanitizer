@@ -105,10 +105,9 @@ we use bits 41-47 to represent the implicit tag */
 	/* Derive MemTag from TSC (no memory access, pure register operation) */
 	#define MEMTAG_FROM_TSC()  ((uint8_t)(__builtin_ia32_rdtsc() & 0x3F))
 
-	/* Toggle between unified (default) and naive 3-stage MEMTAG_CHECK.
-	   Naive version used as baseline to highlight unified check advantage. */
+	/* This snapshot defaults to the naive 3-stage MEMTAG_CHECK. */
 	#ifndef ENABLE_MEMTAG_NAIVE
-	#define ENABLE_MEMTAG_NAIVE 0
+	#define ENABLE_MEMTAG_NAIVE 1
 	#endif
 
 	#if ENABLE_MEMTAG_NAIVE

@@ -11,7 +11,7 @@ fi
 
 # Assumes implicit tagging (x86)
 
-RSAN_CFLAGS="-O2 -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free -g -flto=full -fsanitize=safe-stack -mbmi2"
+RSAN_CFLAGS="-O2 -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free -g -flto=full -fsanitize=safe-stack -mbmi2 -mllvm -mixsan-naive-check"
 RSAN_LDFLAGS="-fuse-ld=lld -fsanitize=safe-stack -no-pie -T $RSAN_LINKER_SCRIPT -z max-page-size=0x1000 -Wl,--dynamic-linker=$RSAN_DYNAMIC_LINKER"
 RSAN_TCMALLOC="-L$RSAN_TC_IMPL_BUILD/lib/ -Wl,-rpath -Wl,$RSAN_TC_IMPL_BUILD/lib/ -ltcmalloc_minimal"
 
