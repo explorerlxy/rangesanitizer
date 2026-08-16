@@ -1,0 +1,27 @@
+# Machine-local
+env.local.sh
+
+# Build trees
+llvm-build/
+tcmalloc-impl-build/
+tcmalloc-baseline-build/
+tcmalloc-expl-build/
+build/
+
+# Generated / local only
+paper/
+.agents/
+.claude/
+.vscode/
+__pycache__/
+*.pyc
+*.o
+*.a
+*.log
+paper_v2.log
+texput.log
+mimalloc-bench.tar.gz
+mimalloc-bench/
+SmartMixSan/
+agent/
+docs/

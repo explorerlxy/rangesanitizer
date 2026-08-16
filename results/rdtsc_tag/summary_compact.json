@@ -1,0 +1,50 @@
+{
+  "tight": {
+    "rounds": 10000,
+    "samples_per_round": 10000,
+    "pooled_within_and_across": {
+      "n": 100000000,
+      "chi2": 48.849,
+      "chi2_df": 63,
+      "chi2_p": 0.9047481174158865,
+      "tvd_vs_uniform": 0.000293,
+      "maxmin_ratio": 1.0031,
+      "entropy_bits": 6.0,
+      "uniform_entropy_bits": 6.0,
+      "min_count": 1560154,
+      "max_count": 1564986
+    }
+  },
+  "unrolled": {
+    "rounds": 10000,
+    "samples_per_round": 10000,
+    "pooled_within_and_across": {
+      "n": 100000000,
+      "chi2": 39.039,
+      "chi2_df": 63,
+      "chi2_p": 0.992371035479642,
+      "tvd_vs_uniform": 0.000238,
+      "maxmin_ratio": 1.0035,
+      "entropy_bits": 6.0,
+      "uniform_entropy_bits": 6.0,
+      "min_count": 1559851,
+      "max_count": 1565341
+    }
+  },
+  "malloc_gap": {
+    "rounds": 10000,
+    "samples_per_round": 10000,
+    "pooled_within_and_across": {
+      "n": 100000000,
+      "chi2": 54.784,
+      "chi2_df": 63,
+      "chi2_p": 0.7600113279899114,
+      "tvd_vs_uniform": 0.000302,
+      "maxmin_ratio": 1.0033,
+      "entropy_bits": 6.0,
+      "uniform_entropy_bits": 6.0,
+      "min_count": 1560416,
+      "max_count": 1565528
+    }
+  }
+}
