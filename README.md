@@ -28,7 +28,7 @@ The allocator writes a tag from `rdtsc() & 0x3F` into bits 62–57 of the heap p
 | Artifact | Location |
 |----------|----------|
 | MixSan (this tree) | https://github.com/explorerlxy/rangesanitizer/tree/MixSan-LAM |
-| MixSan (Naive), three-stage check | commit [`412147b`](https://github.com/explorerlxy/rangesanitizer/tree/412147bcad69e73ec66d14768d415de8a642a7bf) |
+| MixSan (Naive), three-stage check | branch [`MixSan-Naive`](https://github.com/explorerlxy/rangesanitizer/tree/MixSan-Naive) (commit [`0602f1e`](https://github.com/explorerlxy/rangesanitizer/tree/0602f1e805ecfbc6a909d5cdf59ded08ebe3d8c8)) |
 | Custom 97-test suite (\(N=10^{4}\) MixSan counts) | https://github.com/explorerlxy/97-costum-benchmark |
 | SPEC / Larson / single-run suite logs | `results/` in this tree |
 
@@ -116,7 +116,7 @@ Custom 97-test suite (Table 4 / Table 5 in the manuscript): clone [97-costum-ben
 
 ## MixSan (Naive)
 
-Commit `412147bcad69e73ec66d14768d415de8a642a7bf` keeps the three-stage check behind `-mllvm -mixsan-naive-check` in `SafeStack.cpp` and `ENABLE_MEMTAG_NAIVE` in `tcmalloc-implicit/src/common.h` (default off). Checkout that commit in a separate directory, enable both switches, and rebuild LLVM and TCMalloc. The default on that commit is still the unified check.
+Branch [`MixSan-Naive`](https://github.com/explorerlxy/rangesanitizer/tree/MixSan-Naive) (commit `0602f1e805ecfbc6a909d5cdf59ded08ebe3d8c8`) is the three-stage snapshot. The naive compiler path and `ENABLE_MEMTAG_NAIVE` are **on by default**. Clone with `-b MixSan-Naive` and follow that README. The earlier flag-gated commit `412147b` is left unchanged.
 
 ## Evaluation data
 
